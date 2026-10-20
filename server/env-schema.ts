@@ -8,6 +8,8 @@ const schema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
   SESSION_SECRET: z.string().optional(),
   PRINTER_HOST: z.string().optional(),
+  // A USB label printer's local queue name; labels go to it as TSPL. Takes priority over PRINTER_HOST when set.
+  PRINTER_QUEUE: z.string().optional(),
   // The staff portal's address, used for "View result" links to an investigation (<this>/lab-tests/<id>).
   PORTAL_BASE_URL: z.string().url().default("https://uath-staff-staging.betacare.com.ng"),
   OUTSTANDING_HOURS: z.coerce.number().positive().default(24),
