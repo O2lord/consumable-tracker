@@ -7,8 +7,10 @@ import { NotFoundError, ValidationError } from "../domain/errors";
 import { env } from "../env";
 import { isValidBatchCode, normalizeCode, parseDeliveryCode, parsePackCode, parseSerial } from "../../lib/serial";
 import { labelsToZpl } from "../../lib/zpl";
+import { labelsToTspl } from "../../lib/tspl";
+import { renderTsplPreviewHtml } from "../../lib/tspl-preview";
 import { renderLabelsPdf, type PdfLayout } from "../../lib/label-pdf";
-import { sendToPrinter } from "../../lib/printer";
+import { sendToPrinter, sendToQueue } from "../../lib/printer";
 import type { Label } from "../../lib/label-types";
 
 // Composes label content from the database and renders it as PDF or ZPL, or sends it to the printer.
@@ -242,14 +244,34 @@ export async function renderZpl(target: LabelTarget) {
   return { zpl: labelsToZpl(set.labels), name: set.name, count: set.labels.length };
 }
 
-export function isPrinterConfigured(): boolean {
-  return Boolean(env().PRINTER_HOST);
+export async function renderTspl(target: LabelTarget) {
+  const set = await loadLabels(target);
+  return { tspl: labelsToTspl(set.labels), name: set.name, count: set.labels.length };
 }
 
-/** Sends the labels to the configured Zebra printer. Returns how many labels were sent. */
+export async function renderTsplPreview(target: LabelTarget) {
+  const set = await loadLabels(target);
+  return { html: await renderTsplPreviewHtml(set.labels, set.name), name: set.name };
+}
+
+export function isPrinterConfigured(): boolean {
+  const e = env();
+  return Boolean(e.PRINTER_QUEUE || e.PRINTER_HOST);
+}
+
+/**
+ * Prints the labels. A USB printer (PRINTER_QUEUE) gets TSPL commands through its local queue; otherwise a network
+ * Zebra printer (PRINTER_HOST) gets ZPL. Returns how many labels were sent.
+ */
 export async function printLabels(target: LabelTarget): Promise<number> {
+  const queue = env().PRINTER_QUEUE;
+  if (queue) {
+    const { tspl, count } = await renderTspl(target);
+    await sendToQueue(queue, tspl);
+    return count;
+  }
   const host = env().PRINTER_HOST;
-  if (!host) throw new ValidationError("No label printer is set up (PRINTER_HOST). Download the PDF instead.");
+  if (!host) throw new ValidationError("No label printer is set up (PRINTER_QUEUE or PRINTER_HOST). Download the PDF instead.");
   const { zpl, count } = await renderZpl(target);
   await sendToPrinter(host, zpl);
   return count;

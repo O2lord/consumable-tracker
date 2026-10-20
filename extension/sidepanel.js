@@ -1101,18 +1101,70 @@ function hideBusy() {
   $("busy-overlay").hidden = true;
 }
 
+// The print helper (scripts/print_bridge.py) runs on the computer the label printer is plugged into.
+const PRINT_HELPER_URL = "ws://localhost:8767";
+
+/** Sends label commands to the print helper and resolves with how many labels it printed. */
+function sendToPrintHelper(tspl) {
+  const down =
+    "The print helper is not running on this computer. Ask whoever manages this PC to run the print helper installer. " +
+    `If it is installed already, it must be set up to allow this extension (extension ID: ${chrome.runtime.id}).`;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let socket = null;
+    const timer = setTimeout(() => finish(new Error("The print helper did not answer. Check the printer and try again.")), 15000);
+    function finish(err, labels = 0) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        if (socket) socket.close();
+      } catch {
+        /* already closed */
+      }
+      if (err) reject(err);
+      else resolve(labels);
+    }
+    try {
+      socket = new WebSocket(PRINT_HELPER_URL);
+    } catch {
+      finish(new Error(down));
+      return;
+    }
+    socket.onopen = () => socket.send(JSON.stringify({ type: "print", tspl }));
+    socket.onerror = () => finish(new Error(down));
+    socket.onclose = () => finish(new Error(down));
+    socket.onmessage = (event) => {
+      try {
+        const reply = JSON.parse(String(event.data));
+        if (reply.type === "printed") finish(undefined, reply.labels || 0);
+        else finish(new Error(reply.message || "Printing failed"));
+      } catch {
+        finish(new Error("The print helper gave an answer that could not be read"));
+      }
+    };
+  });
+}
+
 async function printLabel() {
   const serial = state.lastIssuedSerial;
   if (!serial) return;
+  const button = $("print-btn");
+  const idle = button.textContent;
+  button.disabled = true;
+  button.textContent = "Printing…";
   try {
-    // Open the tab first (a click allows it), then point it at the PDF once it has downloaded.
-    const tab = window.open("", "_blank");
-    const blob = await api(`/api/issues/${encodeURIComponent(serial)}/label`, { as: "blob" });
-    const url = URL.createObjectURL(new Blob([blob], { type: "application/pdf" }));
-    if (tab) tab.location.href = url;
-    else window.open(url, "_blank");
+    const blob = await api(`/api/issues/${encodeURIComponent(serial)}/label?format=tspl`, { as: "blob" });
+    await sendToPrintHelper(await blob.text());
+    button.textContent = "Label sent to the printer";
+    setTimeout(() => {
+      button.textContent = idle;
+      button.disabled = false;
+    }, 2000);
   } catch (err) {
-    banner("issue-msg", "error", `Could not load the label: ${err.message}`);
+    button.textContent = idle;
+    button.disabled = false;
+    banner("issue-msg", "error", `Could not print the label: ${err.message}`);
   }
 }
 

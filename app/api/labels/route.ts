@@ -2,10 +2,10 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getSession } from "@/server/auth/session";
 import { can } from "@/server/auth/permissions";
 import { DomainError } from "@/server/domain/errors";
-import { printLabels, renderPdf, renderZpl, type LabelTarget } from "@/server/services/labels.service";
+import { printLabels, renderPdf, renderTspl, renderTsplPreview, renderZpl, type LabelTarget } from "@/server/services/labels.service";
 
-// GET  /api/labels?batch=BT...|serial=CT...|delivery=DV...&format=pdf|zpl[&layout=label|a4][&only=...]  -> file
-// POST /api/labels  { batch } or { serial } or { delivery }, with optional { only }                       -> prints on the Zebra printer
+// GET  /api/labels?batch=BT...|serial=CT...|delivery=DV...&format=pdf|zpl|tspl|preview[&layout=label|a4][&only=...]  -> file
+// POST /api/labels  { batch } or { serial } or { delivery }, with optional { only }                       -> prints (USB queue as TSPL, or network Zebra as ZPL)
 //
 // `only` narrows a delivery to its own label (delivery) or its batch labels (batches), and a batch to its own
 // label (batch) or the pack, roll or bottle labels under it (items). Leave it out for everything together.
@@ -70,6 +70,22 @@ export async function GET(request: NextRequest) {
         },
       });
     }
+    if (format === "preview") {
+      const { html } = await renderTsplPreview(target);
+      return new Response(html, {
+        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }
+    if (format === "tspl") {
+      const { tspl, name } = await renderTspl(target);
+      return new Response(tspl, {
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Content-Disposition": `attachment; filename="labels-${name}.tspl"`,
+          "Cache-Control": "no-store",
+        },
+      });
+    }
     if (format === "pdf") {
       const layout = params.get("layout") === "a4" ? "a4" : "label";
       const { bytes, name } = await renderPdf(target, layout);
@@ -81,7 +97,7 @@ export async function GET(request: NextRequest) {
         },
       });
     }
-    return NextResponse.json({ error: "format must be pdf or zpl" }, { status: 400 });
+    return NextResponse.json({ error: "format must be pdf, zpl, tspl or preview" }, { status: 400 });
   } catch (err) {
     return failure(err);
   }
