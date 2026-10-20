@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Consumables Tracker">
+  <rect width="512" height="512" rx="96" fill="#18181b" />
+  <g fill="#fafafa">
+    <rect x="96" y="128" width="28" height="256" />
+    <rect x="144" y="128" width="12" height="256" />
+    <rect x="176" y="128" width="40" height="256" />
+    <rect x="236" y="128" width="12" height="256" />
+    <rect x="268" y="128" width="28" height="256" />
+    <rect x="316" y="128" width="12" height="256" />
+    <rect x="348" y="128" width="40" height="256" />
+    <rect x="392" y="128" width="24" height="256" />
+  </g>
+</svg>

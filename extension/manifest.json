@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Consumables Tracker",
+  "version": "0.2.0",
+  "description": "Issue and return sample bottles from the investigation open on the staff portal, without switching tabs.",
+  "action": { "default_title": "Consumables Tracker" },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "background": { "service_worker": "background.js" },
+  "permissions": ["sidePanel", "storage"],
+  "host_permissions": ["https://localhost/*"],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://*.betacare.com.ng/*"],
+      "js": ["page-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://*.betacare.com.ng/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

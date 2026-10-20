@@ -1,0 +1,117 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens for the University of Abuja Teaching Hospital look (light only).
+ * Source of truth: the "Consumables Tracker UATH design canvas". The brand green comes from the
+ * UATH logo (#075434); buttons and links use a lighter green (#1b7f48) so white text stays readable.
+ */
+:root {
+  --bg: #f3f8f4;
+  --surface: #ffffff;
+  --ink: #10231a;
+  --muted: #566b5f;
+  --line: #d5e4da;
+
+  --brand: #1b7f48;
+  --brand-ink: #ffffff;
+  --brand-soft: #d9f0e2;
+
+  --ok: #2e7d4f;
+  --ok-soft: #e3f3e8;
+  --warn: #a15c07;
+  --warn-soft: #fbeccd;
+  --bad: #b3261e;
+  --bad-soft: #fbe0dd;
+
+  --side: #dcefe2;
+  --side-line: #c3dccb;
+  --side-ink: #2b4a3a;
+  --side-muted: #5f7f6d;
+  --side-title: #075434;
+  --side-on: #1b7f48;
+  --side-on-ink: #ffffff;
+  --side-on-edge: #075434;
+
+  /* Dashboard charts and the stock-health card. */
+  --hero: #1f5a3a;
+  --hero-ink: #ffffff;
+  --hero-muted: #bfe0cb;
+  --chart-green: #2f7d4f;
+  --chart-green-soft: #9fd3b0;
+  --chart-amber: #e0a526;
+  --chart-blue: #3b8ea5;
+  --chart-red: #d6573f;
+  --track: #e4eee7;
+
+  color-scheme: light;
+}
+
+/* Semantic colours, usable as bg-brand, text-muted, border-line and so on. */
+@theme inline {
+  --color-page: var(--bg);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-brand: var(--brand);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-soft: var(--brand-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --color-side: var(--side);
+  --color-side-line: var(--side-line);
+  --color-side-ink: var(--side-ink);
+  --color-side-muted: var(--side-muted);
+  --color-side-title: var(--side-title);
+  --color-side-on: var(--side-on);
+  --color-side-on-ink: var(--side-on-ink);
+  --color-side-on-edge: var(--side-on-edge);
+  --color-hero: var(--hero);
+  --color-hero-ink: var(--hero-ink);
+  --color-hero-muted: var(--hero-muted);
+  --color-chart-green: var(--chart-green);
+  --color-chart-green-soft: var(--chart-green-soft);
+  --color-chart-amber: var(--chart-amber);
+  --color-chart-blue: var(--chart-blue);
+  --color-chart-red: var(--chart-red);
+  --color-track: var(--track);
+  --font-sans: var(--font-figtree);
+  --font-mono: var(--font-geist-mono);
+}
+
+/*
+ * Pages written before the redesign use Tailwind's zinc, red, green and amber scales directly.
+ * Pointing those at the palette above re-themes them without touching every page. New code
+ * should prefer the semantic colours above.
+ */
+@theme {
+  --color-zinc-200: #d5e4da;
+  --color-zinc-300: #c3d6c9;
+  --color-zinc-400: #8fa699;
+  --color-zinc-500: #566b5f;
+  --color-zinc-600: #3f574a;
+  --color-zinc-900: #10231a;
+  --color-red-600: #b3261e;
+  --color-green-600: #2e7d4f;
+  --color-green-700: #256b43;
+  --color-amber-600: #a15c07;
+  --color-amber-700: #8a4d05;
+}
+
+/* Light only for now: the dark: variant is switched off, so leftover dark: classes do nothing. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans), system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}

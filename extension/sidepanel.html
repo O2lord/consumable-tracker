@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Consumables Tracker</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <!-- Sign in -->
+    <section id="view-login" hidden>
+      <h1>Consumables Tracker</h1>
+      <p class="muted">Sign in with your staff ID.</p>
+      <label>Staff ID <input id="login-staff" autocomplete="username" spellcheck="false" /></label>
+      <label>Password <input id="login-password" type="password" autocomplete="current-password" /></label>
+      <button id="login-btn" class="primary">Sign in</button>
+      <div id="login-msg" class="banner" hidden></div>
+      <p class="muted small">
+        Server: <span id="login-base"></span> · <button id="login-settings" class="link">Change</button>
+      </p>
+    </section>
+
+    <!-- Settings -->
+    <section id="view-settings" hidden>
+      <h1>Settings</h1>
+      <label>
+        Tracker address
+        <input id="settings-base" placeholder="https://localhost:3000" spellcheck="false" />
+      </label>
+      <p class="muted small">The address of the Consumables Tracker, for example https://tracker.hospital.ng</p>
+      <div class="row">
+        <button id="settings-save" class="primary">Save and test</button>
+        <button id="settings-back">Back</button>
+      </div>
+      <div id="settings-msg" class="banner" hidden></div>
+    </section>
+
+    <!-- Main -->
+    <section id="view-main" hidden>
+      <header>
+        <div>
+          <div id="who" class="who"></div>
+          <div id="where" class="muted small"></div>
+        </div>
+        <div class="row">
+          <button id="open-settings" class="link" title="Settings">Settings</button>
+          <button id="signout" class="link">Sign out</button>
+        </div>
+      </header>
+
+      <nav class="tabs" role="tablist">
+        <button id="tab-issue" class="tab active" role="tab">Issue</button>
+        <button id="tab-return" class="tab" role="tab">Return</button>
+        <button id="tab-lookup" class="tab" role="tab">Look up</button>
+      </nav>
+
+      <!-- The investigation open on the portal (shared by the Issue and Return tabs) -->
+      <div id="portal-block">
+        <div class="row between">
+          <span class="muted small">Investigation on this page</span>
+          <button id="refresh-page" class="link" title="Check the portal page again">Read page</button>
+        </div>
+        <div id="portal" class="card"></div>
+      </div>
+
+      <!-- Issue -->
+      <div id="pane-issue">
+        <ul id="gate" class="gate" hidden></ul>
+
+        <!-- Other pending tests of the same patient and invoice that this bottle can also serve -->
+        <div id="siblings" class="card" hidden></div>
+
+        <!-- The bulk items (swabs, cotton wool...) this test normally uses, issued together with the bottle -->
+        <div id="consumables" class="card" hidden></div>
+
+        <div id="collector-box">
+          <label>
+            Collected by
+            <select id="collector-type">
+              <option value="PATIENT">Patient</option>
+              <option value="NURSE">Nurse</option>
+              <option value="PORTER">Porter</option>
+              <option value="OTHER">Other</option>
+            </select>
+          </label>
+          <label id="collector-name-wrap" hidden>
+            Name <input id="collector-name" maxlength="120" />
+          </label>
+        </div>
+
+        <label id="override-wrap" hidden>
+          <span id="override-label">Supervisor override: reason</span>
+          <input id="override-reason" maxlength="500" placeholder="Why is this being overridden?" />
+        </label>
+
+        <label>
+          Scan the bottle
+          <input id="issue-scan" class="scan" autocomplete="off" spellcheck="false" placeholder="Scan or type the serial, then Enter" />
+        </label>
+
+        <div id="issue-msg" class="banner" hidden></div>
+        <button id="print-btn" hidden>Print issue label</button>
+      </div>
+
+      <!-- Return -->
+      <div id="pane-return" hidden>
+        <label>
+          Scan the returned bottle
+          <input id="return-scan" class="scan" autocomplete="off" spellcheck="false" placeholder="Scan or type the serial, then Enter" />
+        </label>
+
+        <div id="unit-card" class="card" hidden></div>
+
+        <div id="outcomes" hidden>
+          <p class="muted small">What happened to the bottle?</p>
+          <div class="outcomes">
+            <button id="out-used" class="primary">Used (sample inside)</button>
+            <button id="out-unused">Unused, intact</button>
+            <button id="out-unusable" class="danger">Unusable</button>
+          </div>
+          <div id="unusable-box" hidden>
+            <label>
+              Reason
+              <select id="void-reason"></select>
+            </label>
+            <label>
+              Note (optional) <input id="return-note" maxlength="500" />
+            </label>
+            <button id="out-confirm" class="danger">Confirm unusable</button>
+          </div>
+        </div>
+
+        <div id="return-msg" class="banner" hidden></div>
+      </div>
+
+      <!-- Look up: scan any bottle to see where it has been and the tests it was used for -->
+      <div id="pane-lookup" hidden>
+        <label>
+          Scan any bottle to see everything about it
+          <input id="lookup-scan" class="scan" autocomplete="off" spellcheck="false" placeholder="Scan or type the serial, then Enter" />
+        </label>
+        <div id="lookup-msg" class="banner" hidden></div>
+        <div id="lookup-card" class="card" hidden></div>
+        <div id="lookup-tests" hidden></div>
+        <div id="lookup-journey" hidden></div>
+      </div>
+    </section>
+
+    <!-- Covers the whole panel while a request is running, so the person knows to wait -->
+    <div id="busy-overlay" class="busy-overlay" role="alert" aria-live="assertive" hidden>
+      <div class="busy-box">
+        <div class="spinner" aria-hidden="true"></div>
+        <div id="busy-text" class="busy-text">Please wait…</div>
+      </div>
+    </div>
+
+    <!-- The result of an issue or return, shown over the panel so it is seen without scrolling -->
+    <div id="result-overlay" class="busy-overlay result-overlay" role="alert" aria-live="assertive" hidden>
+      <div id="result-box" class="busy-box result-box">
+        <div id="result-icon" class="result-icon" aria-hidden="true"></div>
+        <div id="result-text" class="busy-text result-text"></div>
+        <button id="result-ok" type="button" class="primary">OK</button>
+      </div>
+    </div>
+
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

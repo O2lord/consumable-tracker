@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Offline - Consumables Tracker</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 32rem;
+        margin: 4rem auto;
+        padding: 0 1rem;
+        line-height: 1.5;
+        color: #10231a;
+        background: #f3f8f4;
+      }
+      button {
+        font: inherit;
+        padding: 0.5rem 1rem;
+        border-radius: 0.5rem;
+        border: 0;
+        background: #1b7f48;
+        color: #fff;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>You are offline</h1>
+    <p>
+      This page is not available without a connection. Any scans you already made are saved on this device and will
+      be sent as soon as it reconnects.
+    </p>
+    <p>To carry on receiving a transfer, reopen its receive page once you are back online.</p>
+    <button type="button" onclick="location.reload()">Try again</button>
+  </body>
+</html>

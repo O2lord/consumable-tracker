@@ -1,0 +1,9 @@
+node_modules
+.next
+.next-check
+coverage
+package-lock.json
+architecture.md
+build.md
+playwright-report
+test-results
