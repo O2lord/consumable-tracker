@@ -10,7 +10,7 @@ const DEFAULT_BASE = "https://localhost:3000";
 // The only tracker hosts this extension will ever talk to (staff passwords, tokens and patient numbers go to
 // them). Put the hospital's tracker domain here before installing on the lab systems, for example
 // "tracker.hospital.ng". A host listed here also covers its subdomains. localhost is always allowed for development.
-const TRACKER_HOSTS = [];
+const TRACKER_HOSTS = ["uath-consumables.netlify.app"];
 const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 
 const state = {
