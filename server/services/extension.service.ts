@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/client";
 import {
@@ -13,11 +13,13 @@ import {
   units,
   voidReasons,
 } from "../db/schema";
-import { DomainError, PatientMismatchError, ValidationError } from "../domain/errors";
+import { AlreadyIssuedError, DomainError, PatientMismatchError, ValidationError } from "../domain/errors";
+import { resolveWorkLocation } from "../domain/issue-rules";
 import { can, canWorkAtAnyLocation } from "../auth/permissions";
 import type { Session } from "../auth/session";
 import { COLLECTOR_TYPES, PATIENT_TYPES, RETURN_OUTCOMES, type Actor } from "../domain/types";
 import { departmentOnly } from "../../lib/issue-location";
+import { acceptedContainers, sharedContainers } from "../../lib/containers";
 import { isPackUnit, perTestUnit } from "../../lib/pack-size";
 import { matchTest } from "../../lib/test-match";
 import { isValidMrn, normalizeMrn, normalizeReference, referenceFormatProblem } from "../../lib/reference-formats";
@@ -33,8 +35,12 @@ import { getBottleReport } from "./report.service";
 
 const text = (max: number) => z.string().trim().max(max);
 
-export const portalIssueSchema = z.object({
-  serial: z.string().trim().min(1, "Scan the bottle"),
+export const portalIssueSchema = z
+  .object({
+  /** The scanned bottle. Left out when `fromStock` is set: the tracker then picks one from stock. */
+  serial: z.string().trim().optional(),
+  /** Issue a bottle taken from stock at the work location (earliest expiry first) instead of a scanned one. */
+  fromStock: z.boolean().default(false),
   investigationRef: z.string().trim().min(1, "No investigation number was read from the page").max(60),
   testName: z.string().trim().min(1, "No test name was read from the page").max(200),
   mrn: z.string().trim().min(1, "No hospital number was read from the page").max(40),
@@ -76,7 +82,8 @@ export const portalIssueSchema = z.object({
     )
     .max(30)
     .default([]),
-});
+  })
+  .refine((v) => v.fromStock || Boolean(v.serial), { message: "Scan the bottle", path: ["serial"] });
 export type PortalIssueInput = z.infer<typeof portalIssueSchema>;
 
 export const portalReturnSchema = z.object({
@@ -181,6 +188,7 @@ export async function issueFromPortal(
     testCode: string;
     reportedPayment: PortalIssueInput["payment"];
   }[] = [{ type: "INVESTIGATION", ref: input.investigationRef, testCode: test.code, reportedPayment: input.payment }];
+  const accepted: string[][] = [acceptedContainers(test.requiredContainer, test.alternateContainers)];
   for (const extra of input.additional) {
     const extraTest = await matchPortalTest(extra.testName);
     if (!extraTest) {
@@ -203,7 +211,14 @@ export async function issueFromPortal(
       testCode: extraTest.code,
       reportedPayment: extra.payment,
     });
+    accepted.push(acceptedContainers(extraTest.requiredContainer, extraTest.alternateContainers));
   }
+
+  // Scanned: the one bottle. From stock: the in-date bottles at this location that fit every test, earliest expiry
+  // first. issueUnit then runs all the usual checks on the one it is given.
+  const candidates = input.fromStock
+    ? await stockBottleCandidates(resolveWorkLocation(actor, input.locationId), accepted)
+    : [input.serial as string];
 
   // The patient is the one on the page; no name is ever sent. For a patient collector no name is kept at all
   // (issueUnit drops it); for anyone else the name typed in the panel is required.
@@ -211,21 +226,32 @@ export async function issueFromPortal(
 
   // The bottle and the consumables go in one transaction: if the swabs are short, the bottle is not issued.
   const { result, consumables } = await db().transaction(async (tx) => {
-    const result = await issueUnit(
-      {
-        serial: input.serial,
-        references,
-        patientHospitalNo: input.mrn,
-        patientType: input.patientType,
-        collectorType: input.collectorType,
-        collectorName,
-        locationId: input.locationId,
-        override: input.override,
-        source: "extension",
-      },
-      actor,
-      tx,
-    );
+    let result: IssueUnitResult | null = null;
+    for (const serial of candidates) {
+      try {
+        result = await issueUnit(
+          {
+            serial,
+            references,
+            patientHospitalNo: input.mrn,
+            patientType: input.patientType,
+            collectorType: input.collectorType,
+            collectorName,
+            locationId: input.locationId,
+            override: input.override,
+            source: "extension",
+          },
+          actor,
+          tx,
+        );
+        break;
+      } catch (err) {
+        // Someone else took this bottle between the lookup and now: try the next one from stock.
+        if (input.fromStock && err instanceof AlreadyIssuedError) continue;
+        throw err;
+      }
+    }
+    if (!result) throw new ValidationError("The bottles in stock were just issued by someone else. Try again");
     let consumables: IssueForTestResult["lines"] = [];
     if (input.consumables.length > 0) {
       // The items are tied to the same investigation and patient as the bottle, so every line issued here carries
@@ -252,6 +278,40 @@ export async function issueFromPortal(
     return { result, consumables };
   });
   return { ...result, testCode: test.code, consumables };
+}
+
+/**
+ * Up to five bottles in stock at a location that every listed test accepts, earliest expiry first (no expiry last),
+ * skipping expired ones. Only a lookup: issueUnit locks and re-checks whichever one is issued. Throws a clear message
+ * when the tests need different containers or nothing suitable is in stock.
+ */
+async function stockBottleCandidates(locationId: string, accepted: readonly (readonly string[])[]): Promise<string[]> {
+  const shared = sharedContainers(accepted);
+  if (shared !== null && shared.length === 0) {
+    const sets = [...new Set(accepted.filter((s) => s.length > 0).map((s) => s.join(" or ")))];
+    throw new ValidationError(`These tests need different containers (${sets.join(", ")}). Issue them in separate groups`);
+  }
+  const day = new Date().toISOString().slice(0, 10);
+  const rows = await db()
+    .select({ serial: units.serial })
+    .from(units)
+    .innerJoin(batches, eq(batches.id, units.batchId))
+    .innerJoin(itemTypes, eq(itemTypes.id, units.itemTypeId))
+    .where(
+      and(
+        eq(units.state, "IN_STOCK"),
+        eq(units.currentLocationId, locationId),
+        or(isNull(batches.expiryDate), gte(batches.expiryDate, day)),
+        shared === null ? undefined : inArray(itemTypes.containerType, shared),
+      ),
+    )
+    .orderBy(sql`${batches.expiryDate} asc nulls last`, asc(units.createdAt), asc(units.serial))
+    .limit(5);
+  if (rows.length === 0) {
+    const need = shared === null ? "" : `${shared.join(" or ")} `;
+    throw new ValidationError(`No ${need}bottle is in stock at your location (expired bottles are left out). Scan a bottle instead`);
+  }
+  return rows.map((r) => r.serial);
 }
 
 // --- keeping the imported investigation current from the portal page ---------------------------------

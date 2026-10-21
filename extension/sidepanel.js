@@ -23,7 +23,10 @@ const state = {
   testMatches: {}, // test name -> { match } | null while loading
   busy: false,
   forceOverride: false,
-  lastIssuedSerial: null,
+  issued: [], // serials issued for the open investigation (and its group) since it was opened, for the Print buttons
+  printed: new Set(), // those of them whose label has been sent to the printer
+  other: new Set(), // investigation numbers ticked that need a different bottle, issued in the same go
+  doneRefs: new Set(), // investigation numbers already issued from this panel, so they are not offered again
   unit: null,
   voidReasons: null,
   cache: {}, // investigation key -> { payload, at }: the last good read of each investigation, kept until Chrome closes
@@ -63,7 +66,7 @@ function chip(text, kind) {
   return el("span", `chip ${kind || ""}`.trim(), text);
 }
 
-function banner(id, kind, text) {
+function banner(id, kind, text, opts) {
   const b = $(id);
   b.hidden = !text;
   b.className = `banner ${kind || "info"}`;
@@ -72,22 +75,37 @@ function banner(id, kind, text) {
   if (id === "issue-msg" || id === "return-msg" || id === "lookup-msg") {
     // A look-up only pops up when it fails: its result is the card itself.
     const popup = kind === "error" || (kind === "ok" && id !== "lookup-msg");
-    if (text && popup) showResult(kind, text);
+    if (text && popup) showResult(kind, text, opts);
     else hideResult();
   }
 }
 
 let resultTimer = null;
+let resultSeq = 0; // counts pop-ups, so a late timer never closes a newer one
 
-function showResult(kind, text) {
+/** `opts.print` adds a Print label button to the pop-up (for an issued bottle), so nobody has to scroll to it. */
+function showResult(kind, text, opts) {
   clearTimeout(resultTimer);
+  resultSeq += 1;
+  const withPrint = Boolean(opts && opts.print);
   const box = $("result-box");
   box.className = `busy-box result-box ${kind}`;
   $("result-icon").textContent = kind === "ok" ? "✓" : "✕";
   $("result-text").textContent = text;
+  const print = $("result-print");
+  print.hidden = !withPrint;
+  if (withPrint) {
+    print.dataset.idle = (opts && opts.printText) || (kind === "ok" ? "Print label" : "Try printing again");
+    print.textContent = print.dataset.idle;
+    print.disabled = false;
+  }
+  // With a Print button, OK is the quiet choice.
+  $("result-ok").classList.toggle("primary", !withPrint);
   $("result-overlay").hidden = false;
-  // A success clears itself so the next bottle can be scanned straight away; an error stays until it is dismissed.
-  if (kind === "ok") resultTimer = setTimeout(hideResult, 4000);
+  // A success clears itself so the next bottle can be scanned straight away, unless it offers Print: that one stays
+  // until OK, a click outside, Escape or the next scan, so the button is still there when it is reached. An error
+  // stays until it is dismissed.
+  if (kind === "ok" && !withPrint) resultTimer = setTimeout(hideResult, 4000);
 }
 
 function hideResult() {
@@ -146,6 +164,8 @@ async function clearSession() {
   state.collected = {};
   state.queueItems = [];
   state.extra.clear();
+  state.other.clear();
+  state.doneRefs.clear();
   state.lookup = null;
   await chrome.storage.session.remove(["tokens", "user", "cache"]);
 }
@@ -478,8 +498,11 @@ async function syncQueue() {
 
 function resetIssueForm() {
   state.extra.clear();
+  state.other.clear();
+  state.doneRefs.clear();
   state.forceOverride = false;
-  state.lastIssuedSerial = null;
+  state.issued = [];
+  state.printed = new Set();
   $("collector-type").value = "PATIENT";
   if ($("collector-type")._refresh) $("collector-type")._refresh();
   $("collector-name").value = "";
@@ -722,10 +745,16 @@ function renderGate() {
     ? "Not paid: supervisor override reason"
     : "Supervisor override reason (then scan the bottle again)";
 
+  const plan = gate.blocked ? [] : issuePlan();
   $("issue-scan").disabled = gate.blocked;
+  $("stock-btn").disabled = gate.blocked;
+  // With more than one bottle to issue, the scan box says which one is next and the stock button issues them all.
+  $("stock-btn").textContent = plan.length > 1 ? `Issue all ${plan.length} bottles from stock and print` : "Issue from stock and print";
   $("issue-scan").placeholder = gate.blocked
     ? "Waiting for a valid investigation…"
-    : "Scan or type the serial, then Enter";
+    : plan.length > 1
+      ? `Scan the next bottle: ${plan[0].need} for ${plan[0].members.map((m) => m.investigationRef).join(", ")} (${plan.length} left)`
+      : "Scan or type the serial, then Enter";
   renderConsumables();
   renderSiblings();
 }
@@ -911,6 +940,7 @@ function siblingItems() {
         it.mrn === d.mrn &&
         (byAdmission ? it.admissionId === d.admissionId : (it.invoice || "").trim() === invoice) &&
         it.investigationRef !== d.investigationRef &&
+        !state.doneRefs.has(it.investigationRef) &&
         /^pending$/i.test(it.status || ""),
     )
     .sort((a, b) => a.investigationRef.localeCompare(b.investigationRef));
@@ -928,7 +958,70 @@ function canShareBottle(a, b) {
   return a.some((c) => b.includes(c));
 }
 
-/** "EDTA", "PLAIN or GEL", or "Any container". */
+/** The containers that satisfy every test given (each entry is what one test accepts; empty means any). Null: any. */
+function sharedOf(sets) {
+  const limited = sets.filter((s) => s.length > 0);
+  if (limited.length === 0) return null;
+  return limited[0].filter((c) => limited.every((s) => s.includes(c)));
+}
+
+/** Whether a test fits in a group's bottle: it can share with every member and one container still suits them all. */
+function joinsGroup(group, accepted) {
+  if (!group.members.every((m) => canShareBottle(m.accepted, accepted))) return false;
+  const shared = sharedOf([...group.members.map((m) => m.accepted), accepted]);
+  return shared === null || shared.length > 0;
+}
+
+/** The container text for a group of tests that share one bottle: EDTA, PLAIN or GEL, or Any container. */
+function groupNeed(group) {
+  const shared = sharedOf(group.members.map((m) => m.accepted));
+  return shared === null ? "Any container" : shared.join(" or ");
+}
+
+/**
+ * The bottles still to issue, in order. The first group is the open investigation with the tests ticked to share its
+ * bottle. Every test ticked as needing a different bottle goes into its own group, or joins another group when the
+ * two can share one (two EDTA tests ride in one EDTA bottle). Each group is issued as one bottle.
+ */
+function issuePlan() {
+  const p = state.portal;
+  if (!p || !p.ok) return [];
+  const d = p.data;
+  const acceptedFor = (testName) => {
+    const m = state.testMatches[testName];
+    return m && m.match ? acceptedOf(m.match) : null;
+  };
+  const asMember = (it) => ({
+    investigationRef: it.investigationRef,
+    testName: it.testName,
+    patientType: it.patientType,
+    payment: it.payment,
+    accepted: acceptedFor(it.testName) || [],
+  });
+  const siblings = siblingItems();
+  const open = {
+    members: [
+      asMember({ investigationRef: d.investigationRef, testName: d.testName, patientType: d.patientType, payment: d.payment }),
+      ...siblings.filter((s) => state.extra.has(s.investigationRef)).map(asMember),
+    ],
+    hasOpen: true,
+  };
+  const others = [];
+  for (const it of siblings.filter((s) => state.other.has(s.investigationRef) && acceptedFor(s.testName) !== null)) {
+    const member = asMember(it);
+    const home = others.find((g) => joinsGroup(g, member.accepted));
+    if (home) home.members.push(member);
+    else others.push({ members: [member], hasOpen: false });
+  }
+  // Once the open investigation has its bottle, only the others are left. With nothing else left, it stays on offer
+  // so a second bottle can still be issued for it, as before.
+  const keepOpen = !state.doneRefs.has(d.investigationRef) || state.extra.size > 0 || others.length === 0;
+  const groups = keepOpen ? [open, ...others] : others;
+  for (const g of groups) g.need = groupNeed(g);
+  return groups;
+}
+
+/** EDTA, PLAIN or GEL, or Any container. */
 function bottleNeeded(match) {
   const accepted = acceptedOf(match);
   return accepted.length ? accepted.join(" or ") : "Any container";
@@ -953,13 +1046,24 @@ function renderSiblings() {
           const m = state.testMatches[it.testName];
           return Boolean(m && m.match && canShareBottle(need, acceptedOf(m.match)));
         });
+  // A test that needs a different bottle is not dropped: it is listed on its own so it can be issued in the same go
+  // (its own bottle), instead of the person having to open that investigation. One that is not in the catalog or is
+  // still being checked is left out (it appears once its container is known).
+  const different =
+    need === null
+      ? []
+      : candidates.filter((it) => {
+          const m = state.testMatches[it.testName];
+          return Boolean(m && m.match && !canShareBottle(need, acceptedOf(m.match)));
+        });
   // A test that is not in the catalog is a data gap an admin has to fix, so it is called out instead of left out.
   const missing = candidates.filter((it) => {
     const m = state.testMatches[it.testName];
     return Boolean(m) && m.match === null;
   });
   for (const ref of [...state.extra]) if (!list.some((s) => s.investigationRef === ref)) state.extra.delete(ref);
-  box.hidden = list.length === 0 && missing.length === 0;
+  for (const ref of [...state.other]) if (!different.some((s) => s.investigationRef === ref)) state.other.delete(ref);
+  box.hidden = list.length === 0 && different.length === 0 && missing.length === 0;
   if (box.hidden) return;
 
   if (list.length) {
@@ -978,6 +1082,34 @@ function renderSiblings() {
     row.append(box1, text);
     box.append(row);
   }
+  if (different.length) {
+    box.append(el("p", "muted small", "These need a different bottle. Tick them to issue their bottles in the same go:"));
+  }
+  for (const it of different) {
+    const row = el("label", "sibling");
+    const box2 = document.createElement("input");
+    box2.type = "checkbox";
+    box2.checked = state.other.has(it.investigationRef);
+    box2.addEventListener("change", () => {
+      if (box2.checked) state.other.add(it.investigationRef);
+      else state.other.delete(it.investigationRef);
+      renderGate(); // the scan prompt and the stock button show how many bottles are now needed
+    });
+    const m = state.testMatches[it.testName];
+    const text = el(
+      "span",
+      "",
+      `${it.investigationRef} · ${it.testName} — ${bottleNeeded(m.match)}${it.payment === "UNPAID" ? " (not paid)" : ""}`,
+    );
+    row.append(box2, text);
+    box.append(row);
+  }
+  const plan = issuePlan();
+  if (plan.length > 1) {
+    box.append(
+      el("p", "small", `${plan.length} bottles in all: ${plan.map((g) => `${g.need} for ${g.members.map((m) => m.investigationRef).join(", ")}`).join("; ")}.`),
+    );
+  }
   if (missing.length) {
     const names = missing.map((it) => `${it.investigationRef} (${it.testName})`).join(", ");
     box.append(
@@ -990,7 +1122,8 @@ function renderSiblings() {
   }
 }
 
-async function doIssue(serial) {
+async function doIssue(serial, opts = {}) {
+  const fromStock = Boolean(opts.fromStock);
   if (state.busy) return;
   const gate = issueGate();
   if (gate.blocked) {
@@ -1007,19 +1140,14 @@ async function doIssue(serial) {
     return;
   }
 
-  const body = {
-    serial,
-    investigationRef: d.investigationRef,
-    testName: d.testName,
-    mrn: d.mrn,
-    patientType: d.patientType,
-    payment: d.payment,
-    collectorType,
-    collectorName: collectorName || undefined,
-  };
-  const extras = siblingItems().filter((s) => state.extra.has(s.investigationRef));
-  // The items for this test go with the bottle, unless they were already issued for it.
+  // Every bottle this patient needs, in order: the open investigation (with the tests ticked to share its bottle)
+  // first, then one bottle per group of ticked tests that need a different container. Scanning issues the next
+  // bottle in the plan; from stock issues all of them in one go.
+  const groups = issuePlan();
+  const todo = fromStock ? groups : groups.slice(0, 1);
+  // The items for the open test go with its bottle, unless they were already issued for it.
   const cons = currentConsumables();
+  let consLines = null;
   if (cons && !state.consumablesIssued.has(cons.key) && cons.lines.length) {
     const bad = cons.lines.find((l) => !Number.isInteger(l.quantity) || l.quantity < 1);
     if (bad) {
@@ -1027,54 +1155,102 @@ async function doIssue(serial) {
       return;
     }
     // No pack is named: the server takes every item first-expiry-first-out.
-    body.consumables = cons.lines.map((l) => ({
-      itemTypeId: l.itemTypeId,
-      quantity: l.quantity,
-    }));
+    consLines = cons.lines.map((l) => ({ itemTypeId: l.itemTypeId, quantity: l.quantity }));
   }
-  if (extras.length) {
-    body.additional = extras.map((s) => ({
-      investigationRef: s.investigationRef,
-      testName: s.testName,
-      patientType: s.patientType || undefined,
-      payment: s.payment,
-    }));
-  }
-  const overrideShown = !$("override-wrap").hidden;
-  if (overrideShown) {
+  let override;
+  if (!$("override-wrap").hidden) {
     const reason = $("override-reason").value.trim();
     if (reason.length < 3) {
       banner("issue-msg", "error", "Enter the reason for the override.");
       $("override-reason").focus();
       return;
     }
-    body.override = { reason };
+    override = { reason };
   }
 
   state.busy = true;
-  banner("issue-msg", "info", "Issuing…");
-  showBusy("Issuing the bottle…");
+  banner("issue-msg", "info", fromStock ? "Taking bottles from stock…" : "Issuing…");
+  showBusy(fromStock ? (todo.length > 1 ? `Issuing ${todo.length} bottles from stock…` : "Issuing a bottle from stock…") : "Issuing the bottle…");
+  const issuedNow = []; // { serial, itemName, refs }
+  const notes = [];
+  const items = [];
+  let failure = null;
+  let failedGroup = null;
   try {
-    const res = await api("/api/ext/issue", { method: "POST", body });
-    const notes = [];
-    if (res.unverified > 0) notes.push("payment could not be verified and is flagged");
-    if (res.overridden) notes.push("supervisor override recorded");
-    const items = (res.consumables || []).map((l) => (l.inPieces ? `${l.quantity} pieces of ${l.itemName}` : `${l.itemName} x${l.quantity}`));
-    banner(
-      "issue-msg",
-      "ok",
-      `Issued ${res.serial} (${res.itemName}) for ${[d.investigationRef, ...extras.map((s) => s.investigationRef)].join(", ")}.${items.length ? ` Items: ${items.join(", ")}.` : ""}${notes.length ? ` Note: ${notes.join("; ")}.` : ""}`,
-    );
-    beep(true);
-    state.lastIssuedSerial = res.serial;
-    if (body.consumables) state.consumablesIssued.add(cons.key);
-    state.extra.clear();
-    for (const ref of [d.investigationRef, ...extras.map((s) => s.investigationRef)]) fetchCollected(ref, true);
+    for (const group of todo) {
+      const [first, ...rest] = group.members;
+      const body = {
+        // From stock: no serial. The tracker picks the bottle and the reply names it.
+        ...(fromStock ? { fromStock: true } : { serial }),
+        investigationRef: first.investigationRef,
+        testName: first.testName,
+        mrn: d.mrn,
+        patientType: first.patientType || d.patientType,
+        payment: first.payment,
+        collectorType,
+        collectorName: collectorName || undefined,
+      };
+      if (rest.length) {
+        body.additional = rest.map((s) => ({
+          investigationRef: s.investigationRef,
+          testName: s.testName,
+          patientType: s.patientType || undefined,
+          payment: s.payment,
+        }));
+      }
+      if (group.hasOpen && consLines) body.consumables = consLines;
+      if (override) body.override = override;
+      let res;
+      try {
+        res = await api("/api/ext/issue", { method: "POST", body });
+      } catch (err) {
+        // Nothing issued yet: the normal error handling below. Otherwise keep what was issued and report the rest.
+        if (issuedNow.length === 0) throw err;
+        failure = err;
+        failedGroup = group;
+        break;
+      }
+      const refs = group.members.map((m) => m.investigationRef);
+      if (res.unverified > 0) notes.push("payment could not be verified and is flagged");
+      if (res.overridden) notes.push("supervisor override recorded");
+      for (const l of res.consumables || []) items.push(l.inPieces ? `${l.quantity} pieces of ${l.itemName}` : `${l.itemName} x${l.quantity}`);
+      issuedNow.push({ serial: res.serial, itemName: res.itemName, refs });
+      state.issued.push(res.serial); // before the pop-up, whose Print button prints these
+      if (body.consumables) state.consumablesIssued.add(cons.key);
+      for (const ref of refs) {
+        state.doneRefs.add(ref);
+        state.extra.delete(ref);
+        state.other.delete(ref);
+      }
+    }
+    const summary = issuedNow.map((i) => `${i.serial} (${i.itemName}) for ${i.refs.join(", ")}`).join("; ");
+    const tail = `${items.length ? ` Items: ${items.join(", ")}.` : ""}${notes.length ? ` Note: ${[...new Set(notes)].join("; ")}.` : ""}`;
+    if (failure) {
+      beep(false);
+      const left = failedGroup.members.map((m) => m.investigationRef).join(", ");
+      banner("issue-msg", "error", `Issued ${summary}.${tail} Could not issue the bottle for ${left}: ${failure.message}`, {
+        print: true,
+        printText: issuedNow.length > 1 ? "Print the issued labels" : "Print the issued label",
+      });
+      if (failure instanceof ApiError && failure.status === 409 && state.user && state.user.can && state.user.can.override) {
+        state.forceOverride = true;
+      }
+    } else {
+      banner("issue-msg", "ok", `Issued ${summary}.${tail}`, {
+        print: true,
+        printText: issuedNow.length > 1 ? `Print ${issuedNow.length} labels` : undefined,
+      });
+      beep(true);
+      state.forceOverride = false;
+    }
+    for (const i of issuedNow) for (const ref of i.refs) fetchCollected(ref, true);
     $("print-btn").hidden = false;
     $("issue-scan").value = "";
     $("override-reason").value = "";
-    state.forceOverride = false;
     renderGate();
+    // From stock the labels print straight away: the person never had a bottle in hand to scan first. If one bottle
+    // could not be issued the error stays on screen, with a button to print what was issued.
+    if (fromStock && !failure) printLabel();
   } catch (err) {
     beep(false);
     banner("issue-msg", "error", err.message);
@@ -1146,25 +1322,47 @@ function sendToPrintHelper(tspl) {
   });
 }
 
+/** The Print buttons: the one under the scan box and the one on the issue pop-up. `label` null puts the normal text back. */
+function setPrintButtons(label, disabled) {
+  const main = $("print-btn");
+  const popup = $("result-print");
+  main.textContent = label || "Print issue label";
+  popup.textContent = label || popup.dataset.idle || "Print label";
+  main.disabled = disabled;
+  popup.disabled = disabled;
+}
+
 async function printLabel() {
-  const serial = state.lastIssuedSerial;
-  if (!serial) return;
-  const button = $("print-btn");
-  const idle = button.textContent;
-  button.disabled = true;
-  button.textContent = "Printing…";
+  if (state.issued.length === 0) {
+    // The panel moved on to another investigation, so there is no bottle left to print: close the pop-up.
+    hideResult();
+    return;
+  }
+  // The labels not yet printed; when all were printed already, print them all again (a reprint).
+  const fresh = state.issued.filter((s) => !state.printed.has(s));
+  const todo = fresh.length ? fresh : [...state.issued];
+  setPrintButtons("Printing…", true);
+  clearTimeout(resultTimer);
   try {
-    const blob = await api(`/api/issues/${encodeURIComponent(serial)}/label?format=tspl`, { as: "blob" });
-    await sendToPrintHelper(await blob.text());
-    button.textContent = "Label sent to the printer";
+    for (const serial of todo) {
+      const blob = await api(`/api/issues/${encodeURIComponent(serial)}/label?format=tspl`, { as: "blob" });
+      await sendToPrintHelper(await blob.text());
+      state.printed.add(serial);
+    }
+    setPrintButtons(todo.length > 1 ? `${todo.length} labels sent to the printer` : "Label sent to the printer", true);
+    const seq = resultSeq;
     setTimeout(() => {
-      button.textContent = idle;
-      button.disabled = false;
-    }, 2000);
+      setPrintButtons(null, false);
+      // Close the pop-up after a moment so the next bottle can be scanned, unless a newer pop-up has taken its place.
+      if (seq === resultSeq) {
+        hideResult();
+        focusScan();
+      }
+    }, 1500);
   } catch (err) {
-    button.textContent = idle;
-    button.disabled = false;
-    banner("issue-msg", "error", `Could not print the label: ${err.message}`);
+    setPrintButtons(null, false);
+    // The pop-up shows the error and keeps a Print button, so it can be tried again without scrolling.
+    banner("issue-msg", "error", `Could not print the label: ${err.message}`, { print: true });
   }
 }
 
@@ -1715,6 +1913,8 @@ function wire() {
     if (e.key === "Enter" && e.target.value.trim()) lookupBottle(e.target.value.trim());
   });
   $("print-btn").addEventListener("click", printLabel);
+  $("stock-btn").addEventListener("click", () => doIssue(null, { fromStock: true }));
+  $("result-print").addEventListener("click", printLabel);
 
   $("out-used").addEventListener("click", () => doReturn("USED"));
   $("out-unused").addEventListener("click", () => doReturn("UNUSED"));
