@@ -56,6 +56,9 @@ Printers & Scanners / Printers).
 It installs to `%LOCALAPPDATA%\PrintHelper` and adds a shortcut in the Startup folder, so the helper starts when this
 user signs in.
 
+**If Windows says "Smart App Control blocked a file that may be unsafe"**, the installer cannot run on this PC. Use
+the manual setup in section 2b instead.
+
 ### macOS
 
 1. Double-click **`install-mac.command`**. If macOS says it cannot be opened, right-click it, choose **Open**, then
@@ -71,6 +74,55 @@ login and restarts it if it stops.
 macOS will show a notification such as "Software from Ned Deily can run in the background". This is expected. Ned
 Deily is the person who signs the official Python installers for macOS, and the helper runs on that Python. Leave it
 allowed in **System Settings > General > Login Items & Extensions**.
+
+---
+
+## 2b. Windows: the installer is blocked (manual setup)
+
+On Windows 11 with **Smart App Control** switched on, double-clicking `install-windows.bat` shows
+"Smart App Control blocked a file that may be unsafe". The installer files are unsigned scripts that came from the
+internet, and Smart App Control refuses those. Do **not** switch Smart App Control off for this: it can only be turned
+back on by resetting Windows. It only blocks scripts that Windows starts by itself, and Python is signed, so the
+helper can be started by hand instead. This does exactly what the installer does, one step at a time.
+(Right-click the `.bat` > Properties > tick **Unblock** sometimes works, but not reliably.)
+
+**Set up the helper**
+
+1. Install Python 3 from python.org and tick "Add python.exe to PATH" (or run `winget install Python.Python.3.12`).
+   Python 3.14 has been tested and works. If `pip` cannot install `pywin32` on a very new Python, use 3.12.
+2. Copy `print_bridge.py` to a folder that will stay put, for example `C:\PrintHelper`. Do not leave it in
+   Downloads: moving or deleting that folder later breaks the start-at-login shortcut.
+3. Open PowerShell in that folder (open it in File Explorer, click the address bar, type `powershell`, Enter) and run:
+   ```
+   py -m pip install websockets pywin32
+   py print_bridge.py --list
+   ```
+   (If `py` is not recognised, use `python`.) Copy the exact name of the label printer from the list, for example
+   `Xprinter XP-365B`.
+4. Start the helper, using that printer name and the app's address exactly as it appears in the browser address bar
+   (no path, no trailing slash):
+   ```
+   py print_bridge.py --printer "Xprinter XP-365B" --origin https://uath-consumables.netlify.app
+   ```
+   The log should say `Print bridge on ws://localhost:8767, printer: ..., allowed origins: ...`. Leave the window open.
+5. Test it as in section 3.
+
+**Make it start at login** (do this only after printing works)
+
+1. In PowerShell run `where pythonw` and note the path it prints (it differs between PCs).
+2. Press Win+R, type `shell:startup`, Enter. In that folder choose New > Shortcut and paste this as the location,
+   with your own `pythonw.exe` path, script folder, printer name and app address:
+   ```
+   "C:\Users\<you>\AppData\Local\Programs\Python\Python312\pythonw.exe" "C:\PrintHelper\print_bridge.py" --printer "Xprinter XP-365B" --origin https://uath-consumables.netlify.app
+   ```
+3. Name it `Label Print Helper`, open its Properties and set Run to **Minimized**.
+4. Sign out and back in, then check Task Manager > Details for `pythonw.exe`. Once the shortcut runs the helper,
+   closing the PowerShell window from step 4 no longer matters.
+
+**Changing anything later** (printer, app address, extension ID): end `pythonw.exe` in Task Manager > Details first,
+because the old copy keeps port 8767 busy, then edit the shortcut's target and start it again. The extension ID is
+added as `--extension-id <32 letters>` at the end of the command and of the shortcut target (see the browser
+extension section below).
 
 ---
 
@@ -101,6 +153,16 @@ You need to run it again whenever the app moves to a new address.
 ---
 
 ## Troubleshooting
+
+**"Smart App Control blocked a file that may be unsafe" when running the installer**
+- Windows will not run the unsigned `.bat` / `.ps1` installer. Follow the manual setup in section 2b. There is no need
+  to turn Smart App Control off.
+
+**Printing worked, but stopped after a restart (manual setup)**
+- The start-at-login shortcut is missing or points at a moved folder. Check `shell:startup`, and that the script path
+  in the shortcut still exists. Check Task Manager > Details for `pythonw.exe`.
+- If you restarted the helper by hand and it says the port is in use, an older copy is still running: end
+  `pythonw.exe` in Task Manager first.
 
 **"The print helper is not running on this computer"**
 - The installer was not run on this PC, or this is a different PC user. Run it for each user who prints.
@@ -157,6 +219,18 @@ The helper only accepts the app's address by default, so each PC also needs to a
    Everything can be given in one go, so nothing is asked:
    - Windows: `install-windows.bat -AppUrl https://tracker.example.org -Printer "Xprinter XP-365B" -ExtensionId <the 32 letters>`
    - macOS: `APP_URL=https://tracker.example.org PRINTER=Xprinter_XP_365B_2 EXTENSION_ID=<the 32 letters> bash install-mac.command`
+
+**Windows with the installer blocked (manual setup):** there is no installer to re-run. Add `--extension-id <the 32
+letters>` to the end of the helper command (and of the Startup shortcut's target), end `pythonw.exe` in Task Manager if
+it is running, and start the helper again. The log's `allowed origins` line should now list
+`chrome-extension://<the 32 letters>`. Check the ID against the one shown at `chrome://extensions`: one wrong letter
+and printing from the extension is refused.
+
+**Loading the extension on a PC:** the extension is not installed from a store. Keep its `extension` folder somewhere
+stable (for example `C:\ConsumablesExtension`), then in Chrome or Edge open `chrome://extensions` (or
+`edge://extensions`), turn on Developer mode, choose **Load unpacked** and pick the folder that holds `manifest.json`.
+Open the side panel, go to Settings, enter the tracker's address and choose **Save and test**, then allow Chrome's
+permission prompt and sign in. The extension only acts on the staff portal pages (`*.betacare.com.ng`).
 
 The ID stays the same as long as the extension is installed from the same source. An extension loaded unpacked from a
 folder can get a different ID on each PC, so it is simpler to give every PC the same installed copy.

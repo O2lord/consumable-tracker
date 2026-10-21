@@ -1,37 +1,46 @@
 "use client";
 
 import { useState } from "react";
+import { sendToBridge } from "@/lib/print-bridge";
 
 /**
- * Prints only the transfer barcode (a small label with the code under it) so it can be stuck on the
- * box. The label PDF loads in a hidden frame and the print dialog opens straight away; if the browser
- * will not print from the frame, the PDF opens in a new tab instead.
+ * Prints only the transfer barcode (a small label with the code under it) so it can be stuck on the box.
+ * It goes straight to the label printer through the print helper on this computer, the same way the batch and
+ * delivery labels do (see lib/print-bridge.ts): the page fetches the printer commands and the helper prints them.
  */
 export function PrintBarcodeButton({ code, className }: { code: string; className?: string }) {
-  const [busy, setBusy] = useState(false);
+  const [state, setState] = useState<{ busy: boolean; error?: string; message?: string }>({ busy: false });
 
-  function print() {
-    setBusy(true);
-    const url = `/api/transfers/${encodeURIComponent(code)}?format=label`;
-    const frame = document.createElement("iframe");
-    frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
-    frame.onload = () => {
-      try {
-        frame.contentWindow?.focus();
-        frame.contentWindow?.print();
-      } catch {
-        window.open(url, "_blank");
+  async function print() {
+    setState({ busy: true });
+    try {
+      const res = await fetch(`/api/transfers/${encodeURIComponent(code)}?format=tspl`, { cache: "no-store" });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error ?? "Could not get the barcode");
       }
-      setBusy(false);
-      setTimeout(() => frame.remove(), 60_000);
-    };
-    frame.src = url;
-    document.body.appendChild(frame);
+      await sendToBridge(await res.text());
+      setState({ busy: false, message: "Barcode sent to the printer." });
+    } catch (err) {
+      setState({ busy: false, error: err instanceof Error ? err.message : "Printing failed" });
+    }
   }
 
   return (
-    <button type="button" onClick={print} disabled={busy} className={className}>
-      {busy ? "Preparing…" : "Print barcode"}
-    </button>
+    <div className="flex flex-col items-start gap-1">
+      <button type="button" onClick={print} disabled={state.busy} className={className}>
+        {state.busy ? "Printing…" : "Print barcode"}
+      </button>
+      {state.error ? (
+        <p role="alert" className="max-w-xs text-sm text-red-600">
+          {state.error}
+        </p>
+      ) : null}
+      {state.message ? (
+        <p role="status" className="text-sm text-green-700">
+          {state.message}
+        </p>
+      ) : null}
+    </div>
   );
 }
