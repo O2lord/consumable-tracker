@@ -32,9 +32,9 @@ To keep momentum, we **write the code for a phase (or a coherent chunk of it) fi
 | 3 | Issue, return, void | IN PROGRESS |
 | 4 | Reports: reconciliation, outstanding, bottle history | IN PROGRESS |
 | 5 | Offline queue and sync | IN PROGRESS |
-| 6 | CSV cross-checks (investigations, Pharmacy) | IN PROGRESS |
+| 6 | CSV cross-checks (investigations) | IN PROGRESS |
 | Ext | Staff portal Chrome extension (side panel) | IN PROGRESS |
-| 7 | Pharmacy API layering | NOT STARTED |
+| 7 | Removed (2026-10-21): Pharmacy API layering dropped | REMOVED |
 | 8 | EMR reference provider | NOT STARTED |
 | 9 | Fit to the hospital's list (corrections.md) | IN PROGRESS |
 
@@ -296,22 +296,19 @@ _Verified: `/api/health` returned `{"ok":true,"database":"reachable","schemaVers
 
 Built (2026-10-07): typecheck, lint and `npm test` (13 files, 181 tests) pass; migrations `20261007000300` and `20261007000400` are on the hosted project.
 
-**Change of direction (2026-10-07): investigations come from the Chrome extension, not uploads.** Hundreds of investigations are raised daily, so exporting and uploading files does not scale, and all staff will use the extension. The extension now records each investigation in `investigation_imports` the first time it reads it or issues a bottle against it (`recordPortalInvestigation` in `extension.service.ts`; rows are marked `raw.source = "portal"`, queue `LAB`), and keeps status and invoice number current. The investigation upload was removed from `/admin/imports` (Pharmacy uploads stay). `importInvestigations` and `lib/import-parse.ts` are kept in the code, unused by any screen, in case a one-off backfill is needed. Payment is not stored from the portal and no longer blocks the extension panel: the EMR decides whether a test goes ahead. To stop the server blocking too, migration `20261007001200_issue_policies_none.sql` sets every issue policy rule to `NONE` (written, **not yet applied**: run `npm run db:push`). The orphan report now means "issued against a number never seen on the portal" (typed by hand, so a possible typo), not "not in an export". Not yet tested; needs a typecheck and a run through the extension.
+**Change of direction (2026-10-07): investigations come from the Chrome extension, not uploads.** Hundreds of investigations are raised daily, so exporting and uploading files does not scale, and all staff will use the extension. The extension now records each investigation in `investigation_imports` the first time it reads it or issues a bottle against it (`recordPortalInvestigation` in `extension.service.ts`; rows are marked `raw.source = "portal"`, queue `LAB`), and keeps status and invoice number current. The investigation upload was removed from `/admin/imports`. `importInvestigations` and `lib/import-parse.ts` are kept in the code, unused by any screen, in case a one-off backfill is needed. Payment is not stored from the portal and no longer blocks the extension panel: the EMR decides whether a test goes ahead. To stop the server blocking too, migration `20261007001200_issue_policies_none.sql` sets every issue policy rule to `NONE` (written, **not yet applied**: run `npm run db:push`). The orphan report now means "issued against a number never seen on the portal" (typed by hand, so a possible typo), not "not in an export". Not yet tested; needs a typecheck and a run through the extension.
 
-- [x] Migration: `investigation_imports`, `pharmacy_imports`, `sync_log`, `v_orphan_issues`, `v_pharmacy_mismatch`, `v_pharmacy_transfer_check`
-- [x] `import.service.ts` (`importInvestigations`, `importPharmacy`), `lib/import-parse.ts`, `lib/pharmacy-parse.ts`
-- [x] `scripts/import-pharmacy.ts` (`npm run import-pharmacy -- --kind ... --file ... --as <staff id>`; runs through vite-node so it reuses the `server-only` stub). Not run yet
+**Pharmacy removed (2026-10-21):** everything to do with the EMR's Pharmacy module was taken out (imports, mismatch views and reports, reconcile runs, GRN receiving, the Pharmacy transfer link and the Pharmacy catalog link). Migration `20261021000100_remove_pharmacy.sql` drops the database side (**not yet applied**: run `npm run db:push`; take a backup first if any Pharmacy data might be wanted).
+
+- [x] Migration: `investigation_imports`, `sync_log`, `v_orphan_issues`
+- [x] `import.service.ts` (`importInvestigations`), `lib/import-parse.ts`
 - [ ] `scripts/import-investigations.ts` (the upload page covers it; the CLI is optional)
-- [x] `admin/imports` upload page (investigations and Pharmacy) and import history
+- [x] `admin/imports` page (import history)
 - [x] `csv.provider.ts` for references; MRN-first issue screen using `listPendingForPatient`
-- [x] `pharmacy/provider.ts`, `manual.provider.ts`, `csv.provider.ts`, `index.ts` (`PHARMACY_PROVIDER`)
-- [x] `pharmacy-reconcile.service.ts` (named as in architecture; reads the two views)
-- [x] Orphan issues report (`/reports/orphans`) and Pharmacy mismatch report (`/reports/pharmacy`, `/api/reports/pharmacy-stock`, `/api/reports/pharmacy-transfers`)
-- [ ] Tests: `pharmacy-parse` unit tests; integration test for `importPharmacy` and the mismatch views (re-upload updates, quantity difference, unmapped location)
-- [ ] Manual: apply migrations (done), upload a real inventory, GRN and transfers file on `/admin/imports`, then check `/reports/pharmacy`
+- [x] Orphan issues report (`/reports/orphans`)
 - [ ] Check whether the EMR request slip carries a barcode or QR; if so, add slip-scan issuing
 
-**Done when:** a typo'd or non-existent investigation number appears on the orphan report, and a quantity difference against a Pharmacy export appears on the mismatch report.
+**Done when:** a typo'd or non-existent investigation number appears on the orphan report.
 
 ---
 
@@ -326,14 +323,22 @@ Added after the original plan. It replaces the investigation CSV upload planned 
 - **Payment:** read from the portal response and handed to the issue policy; never stored on the investigation record. **Every issue policy is currently `NONE`, so the tracker does not block issuing on payment.** Whether it should also stop bottles going out for unpaid investigations is to be discussed with the CMD; if yes, set the outpatient and walk-in investigation rules to `MUST_BE_PAID` on the Issue policies screen (no code change).
 - **Tracker address:** `https` only.
 - **Tokens:** kept in `chrome.storage.session`, cleared when the browser closes.
+- **Issue from stock (added 2026-10-21):** a second way to issue with no scan. `/api/ext/issue` accepts `fromStock: true` in place of `serial`; the server picks the bottle (in stock at the working location, container accepted by every test in the group, expiry not passed, earliest expiry first) and `issueUnit` still runs every rule. If a candidate was taken meanwhile, the next one is tried. The panel then prints the label straight away.
+- **Several bottles for one patient (added 2026-10-21):** tests that need a different container are listed under "These need a different bottle" and grouped into a plan, one bottle per group. Scanning issues one bottle at a time; Issue from stock issues the whole plan. If a later bottle fails, the ones already issued stay issued and their labels can still be printed. The items used (swabs) go only with the open investigation's bottle, in the same transaction.
+- **Deployment of updates (added 2026-10-21):** each lab PC loads `extension/` unpacked from one fixed git clone and updates by pull plus refresh; the folder path decides the extension ID, which the print helper checks. The server is redeployed separately; an old server rejects the new request with "expected string, received undefined".
 
 - [~] `extension/` (manifest, background, page-hook, content, side panel): Issue, Return and Look up tabs, scanner forwarding, portal navigation
-- [~] `app/api/ext/*` routes and `extension.service.ts` (login, refresh, me, sync, test-match, investigation-bottles, issue, return, unit, bottle, void-reasons)
+- [~] `app/api/ext/*` routes and `extension.service.ts` (login, refresh, me, sync, test-match, investigation-bottles, issue, return, unit, bottle, void-reasons, active-refs, bulk-items)
+- [~] Issue from stock: `fromStock` on `portalIssueSchema`, `stockBottleCandidates` in `extension.service.ts`, the "Issue from stock and print" button in `sidepanel.html/.js`. Written 2026-10-21; not yet seen working on a lab PC (the first try failed only because the hosted server still ran the old code)
+- [~] Several bottles in one go: `issuePlan()` and the "Issue all N bottles from stock and print" button; partial failure keeps what was issued and offers to print it
+- [~] Label printing from the panel through the local print helper (`scripts/print_bridge.py`, port 8767; setup in `scripts/print-helper/README.md`, manual start-at-login steps and extension-update steps added 2026-10-21)
 - [~] Investigations recorded from the portal into `investigation_imports` (`raw.source = portal`), status, invoice and progress kept current
 - [~] Inpatient tests grouped by admission so they can share a bottle
 - [~] https-only tracker address
-- [ ] Tests: unit tests for the field whitelist (page-hook) and the sibling-grouping rule; integration tests for `extension.service.ts` (issue, return, sync) against the database
+- [ ] Tests: unit tests for the field whitelist (page-hook) and the sibling-grouping rule; integration tests for `extension.service.ts` (issue, return, sync) against the database, including issue from stock (earliest expiry first, expired skipped, wrong container refused, nothing in stock, candidate taken meanwhile) and the several-bottle plan
 - [ ] Manual: sign in from the panel, open an investigation on the portal, scan a bottle, check one scan links the sharing tests; return it in each outcome; supervisor override; token expiry and sign-in again; scanner input while the cursor is in a portal text field (must not be captured)
+- [ ] Manual, issue from stock: press the button on a lab PC and check the label prints; with a patient who has tests needing two containers, check two bottles issue and two labels print; stop the helper and check the error offers a reprint; restart the PC without opening a terminal and check the helper starts by itself (`pythonw.exe` in Task Manager)
+- [ ] Lab PC setup: for each PC that prints, a fixed extension folder (git clone), the startup shortcut for the helper with the right `--printer`, `--origin` and `--extension-id`, and a restart test
 - [ ] Narrow the script host matches (`https://*.betacare.com.ng/*`) to the real staging and production hosts
 - [ ] Narrow the sync to the open investigation and those with active bottle links, instead of every investigation the portal has loaded (privacy)
 - [ ] Hospital sign-off and data-protection review for sending these fields to the tracker
@@ -345,19 +350,8 @@ Added after the original plan. It replaces the investigation CSV upload planned 
 
 ---
 
-## Phase 7 — Pharmacy API layering (M7)
-**Status:** NOT STARTED for the API parts. **Order of work (decided 2026-10-07):** finish and manually test the standalone tracker first (CSV imports, no EMR). The items below that need the EMR (`emr.provider.ts`, accepting the Pharmacy transfer, Phase 8) wait until the standalone version works. The CSV-based pieces marked `[~]` below are part of the standalone build.
-
-- [ ] Complete the section 16.4 check (are consumables in Pharmacy Catalogs and Inventory?) and record the result here
-- [ ] Prepare mappings: locations to Pharmacy Locations, item types to catalog items, staff IDs
-- [ ] `pharmacy/emr.provider.ts` and `api/pharmacy/sync`
-- [~] GRN → batch creation, from the imported CSV for now: `grn.service.ts` (`listGrnSummaries`, `getGrnReceipt`, `receiveGrnLine`), `stockIn` takes an optional `origin` (`source = PHARMACY_GRN`, GRN and batch ids), pages `store/stock-in/grn` and `store/stock-in/grn/[ref]`, migration `20261007000500_grn_receipt.sql` (unique index so one GRN line cannot make two batches), applied 2026-10-07. Typecheck and lint pass; `tests/integration/grn-receive.test.ts` (8 tests: mocks the Pharmacy provider, runs against the dev database and rolls back) passes. Manual check on a real GRN file still to do. It reads through `PharmacyProvider`, so the EMR provider can replace the CSV one later
-- [~] Linked transfers: scanned total must match the Pharmacy transfer quantity, with a recorded explanation otherwise. The check itself was built in Phase 2; now `createTransfer` reads the quantity from `PharmacyProvider.getTransfer` when Pharmacy has the transfer on file (Pharmacy's figure wins over a typed one), and the dispatch form asks only for the transfer number. A typed quantity is used only when the transfer is not on file. `tests/integration/transfer-pharmacy-link.test.ts` written, not yet run
-- [ ] Accept the Pharmacy transfer only for the quantity the tracker confirmed
-- [~] Daily reconcile job: `runPharmacyReconcile` and `listReconcileRuns` in `pharmacy-reconcile.service.ts` record the mismatch counts in `pharmacy_reconcile_runs` (migration `20261007000600`, **not yet applied**). `POST /api/pharmacy/sync` runs one (Bearer `PHARMACY_SYNC_SECRET` for a scheduler, or a signed-in supervisor or auditor), `GET` lists runs; the Pharmacy report has a "Run check now" button and the history. No scheduler is wired yet: point a daily cron or Supabase scheduled function at the endpoint
-- [~] Shadow mode: the reconcile runs only log differences and block nothing. The one blocking rule that exists (an explanation is needed when a linked transfer's scanned total differs) is unchanged; a switch to turn it off or on is not built
-
-**Done when:** a Pharmacy GRN creates a batch automatically and a linked transfer reconciles between both systems.
+## Phase 7 — Removed (2026-10-21)
+The Pharmacy API layering (GRN → batch, linked transfers, daily reconcile) was dropped together with all other Pharmacy code. Batches are entered manually (`source = MANUAL`). See the note under Phase 6.
 
 ---
 

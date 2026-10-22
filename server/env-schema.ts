@@ -15,15 +15,6 @@ const schema = z.object({
   OUTSTANDING_HOURS: z.coerce.number().positive().default(24),
   // Where investigations are looked up: the imported files (csv, the default) or format checks only (manual).
   REFERENCE_PROVIDER: z.enum(["csv", "manual"]).default("csv"),
-  // Where Pharmacy data comes from: the imported exports (csv, the default) or nowhere (manual: nothing is
-  // known, so quantities are only checked by hand). Phase 7 adds `emr`.
-  PHARMACY_PROVIDER: z.enum(["csv", "manual"]).default("csv"),
-  // Shared secret for the scheduled reconcile call (POST /api/pharmacy/sync with `Authorization: Bearer <secret>`).
-  // Unset, the endpoint accepts signed-in supervisors and auditors only.
-  PHARMACY_SYNC_SECRET: z.preprocess(
-    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
-    z.string().min(16, "PHARMACY_SYNC_SECRET must be at least 16 characters").optional(),
-  ),
 });
 
 export type Env = z.infer<typeof schema>;

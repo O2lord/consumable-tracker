@@ -49,12 +49,6 @@ export function CreateTransferForm({
           />
         </Field>
         </div>
-        <Field label="Pharmacy transfer number (optional)" hint="If Pharmacy has the matching transfer, enter its number. Its quantity is read from the imported Pharmacy transfers and checked against what you scan.">
-          <input name="pharmacyTransferId" className={inputClass} />
-        </Field>
-        <Field label="Pharmacy transfer quantity (only if the transfer is not imported)">
-          <input name="pharmacyQuantity" type="number" min={0} step={1} className={inputClass} inputMode="numeric" />
-        </Field>
         <Field label="Note (optional)">
           <input name="note" className={inputClass} maxLength={500} />
         </Field>

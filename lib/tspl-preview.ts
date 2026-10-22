@@ -39,6 +39,10 @@ async function labelSvg(label: Label): Promise<string> {
 
 export async function renderTsplPreviewHtml(labels: Label[], title: string): Promise<string> {
   const svgs = await Promise.all(labels.map(labelSvg));
+  const figures = svgs.map(
+    (svg, i) =>
+      `<figure class="lbl" data-n="${i + 1}"><span class="num">${i + 1}</span><span class="tick" aria-hidden="true"></span>${svg}</figure>`,
+  );
   const count = `${svgs.length} ${svgs.length === 1 ? "label" : "labels"}`;
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -69,14 +73,36 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
   #status.ok { background: #1e4d33; color: #d7f3e1; }
   #status.err { background: #5c2020; color: #fbd5d5; }
   main { display: flex; flex-direction: column; align-items: safe center; gap: 20px; padding: 28px 24px 48px; }
+  .seg { display: flex; padding: 2px; background: #3c4043; border-radius: 6px; }
+  .seg button { height: 30px; padding: 0 12px; border: 0; border-radius: 4px; background: transparent; color: #bdc1c6; font: inherit; font-size: 13px; cursor: pointer; }
+  .seg button.on { background: #5f6368; color: #fff; }
+  #pickbar { position: sticky; top: 56px; z-index: 1; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 24px; background: #2d3033; border-bottom: 1px solid #3c4043; font-size: 13px; color: #bdc1c6; }
+  #pickbar[hidden] { display: none; }
+  #pickbar button { height: 28px; padding: 0 10px; border: 1px solid #5f6368; border-radius: 4px; background: transparent; color: #e8eaed; font: inherit; font-size: 13px; cursor: pointer; }
+  #pickbar button:hover { background: #3c4043; }
+  #pickbar input { height: 28px; width: 150px; padding: 0 8px; border: 1px solid #5f6368; border-radius: 4px; background: #202124; color: #e8eaed; font: inherit; font-size: 13px; }
+  #pickcount { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .lbl { position: relative; margin: 0; flex: none; }
+  .num { position: absolute; top: 4px; right: 6px; z-index: 1; font-size: 11px; color: #5f6368; font-variant-numeric: tabular-nums; pointer-events: none; }
+  .tick { display: none; position: absolute; top: 6px; left: -30px; width: 20px; height: 20px; border: 2px solid #9aa0a6; border-radius: 4px; background: #202124; }
+  body.custom .tick { display: block; }
+  body.custom .lbl { cursor: pointer; user-select: none; }
+  body.custom .lbl:not(.sel) svg { opacity: .45; }
+  body.custom .lbl.sel svg { outline: 3px solid #34a853; outline-offset: 2px; }
+  body.custom .lbl.sel .tick { background: #34a853; border-color: #34a853; }
+  body.custom .lbl.sel .tick::after { content: ""; position: absolute; left: 5px; top: 1px; width: 6px; height: 11px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
   svg { display: block; flex: none; width: calc(520px * var(--zoom)); height: auto; background: #fff; border-radius: 2px; box-shadow: 0 2px 10px rgba(0,0,0,.55); }
-  @media (max-width: 760px) { .meta { display: none; } header { padding: 0 12px; } #status { right: 12px; } main { padding: 20px 12px 40px; } }
-  @media print { header, #status { display: none; } body { background: #fff; } main { padding: 0; gap: 0; } svg { width: 100%; box-shadow: none; } }
+  @media (max-width: 760px) { .meta { display: none; } header { padding: 0 12px; } #status { right: 12px; } main { padding: 20px 12px 40px; } #pickbar { padding: 8px 12px; } .tick { left: 4px; top: 4px; } }
+  @media print { header, #status, #pickbar, .num, .tick { display: none !important; } body { background: #fff; } main { padding: 0; gap: 0; } .lbl { width: 100%; } svg { width: 100%; box-shadow: none; opacity: 1 !important; outline: 0 !important; } body.custom .lbl:not(.sel) { display: none; } }
 </style></head><body>
 <header>
   <h1>Labels ${esc(title)}</h1>
   <div class="tools">
     <span class="meta">${count} &middot; ${TSPL_LABEL_W_MM} &times; ${TSPL_LABEL_H_MM} mm</span>
+    <div class="seg" role="group" aria-label="What to print">
+      <button id="mode-all" type="button" class="on">Print all</button>
+      <button id="mode-custom" type="button">Custom</button>
+    </div>
     <div class="zoom" role="group" aria-label="Zoom">
       <button id="zoom-out" type="button" aria-label="Zoom out">&minus;</button>
       <button id="zoom-value" type="button" title="Reset to 50%">50%</button>
@@ -86,7 +112,15 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
   </div>
 </header>
 <div id="status" role="status" hidden></div>
-<main>${svgs.join("")}</main>
+<div id="pickbar" hidden>
+  <button id="sel-all" type="button">Select all</button>
+  <button id="sel-none" type="button">Clear</button>
+  <input id="sel-range" type="text" placeholder="e.g. 1-5, 8" aria-label="Label numbers to print" autocomplete="off">
+  <span>Click labels to choose them. Shift-click selects a range.</span>
+  <span id="pickcount"></span>
+</div>
+<main>${figures.join("")}</main>
+<script src="/print-bridge.js"></script>
 <script>
 (function () {
   var STEPS = [25, 50, 75, 100, 125, 150, 200, 300];
@@ -114,6 +148,7 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
   plus.onclick = function () { step(1); };
   out.onclick = function () { zoom = DEFAULT_ZOOM; apply(); };
   document.addEventListener("keydown", function (e) {
+    if (e.target && e.target.tagName === "INPUT") return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === "+" || e.key === "=") step(1);
     else if (e.key === "-") step(-1);
@@ -121,12 +156,90 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
   });
   apply();
 
-  // Print: the same labels as printer commands, passed to the print helper on this computer.
-  var HELPER = "ws://localhost:8767";
-  var DOWN = "The print helper is not running on this computer. Ask whoever manages this PC to run the print helper installer, or restart the PC if it was installed already.";
+  // Print: the same labels as printer commands, sent to the label printer by /print-bridge.js (QZ Tray first, then
+  // the print helper on this computer).
   var btn = document.getElementById("print");
   var box = document.getElementById("status");
   var hideTimer = null;
+
+  // Choosing what to print: "Print all", or "Custom" where you tick the labels you want. Labels are numbered as shown.
+  var figs = Array.prototype.slice.call(document.querySelectorAll(".lbl"));
+  var total = figs.length;
+  var custom = false;
+  var selected = {};
+  var lastN = null;
+  var modeAll = document.getElementById("mode-all");
+  var modeCustom = document.getElementById("mode-custom");
+  var pickbar = document.getElementById("pickbar");
+  var rangeIn = document.getElementById("sel-range");
+  var pickCount = document.getElementById("pickcount");
+  function picked() {
+    var out = [];
+    for (var n = 1; n <= total; n++) if (selected[n]) out.push(n);
+    return out;
+  }
+  function compress(nums) {
+    var parts = [];
+    for (var i = 0; i < nums.length; ) {
+      var j = i;
+      while (j + 1 < nums.length && nums[j + 1] === nums[j] + 1) j++;
+      parts.push(j > i ? nums[i] + "-" + nums[j] : String(nums[i]));
+      i = j + 1;
+    }
+    return parts.join(",");
+  }
+  function refresh() {
+    var nums = picked();
+    figs.forEach(function (f) { f.classList.toggle("sel", !!selected[f.dataset.n]); });
+    document.body.classList.toggle("custom", custom);
+    modeAll.classList.toggle("on", !custom);
+    modeCustom.classList.toggle("on", custom);
+    pickbar.hidden = !custom;
+    pickCount.textContent = nums.length + " of " + total + " selected";
+    if (document.activeElement !== rangeIn) rangeIn.value = compress(nums);
+    if (custom) {
+      btn.textContent = nums.length ? "Print " + nums.length + " selected" : "Select labels";
+      btn.disabled = nums.length === 0;
+    } else {
+      btn.textContent = "Print";
+      btn.disabled = false;
+    }
+  }
+  modeAll.onclick = function () { custom = false; refresh(); };
+  modeCustom.onclick = function () { custom = true; refresh(); };
+  document.getElementById("sel-all").onclick = function () {
+    for (var n = 1; n <= total; n++) selected[n] = true;
+    refresh();
+  };
+  document.getElementById("sel-none").onclick = function () { selected = {}; lastN = null; refresh(); };
+  figs.forEach(function (f) {
+    f.addEventListener("click", function (e) {
+      if (!custom) return;
+      var n = Number(f.dataset.n);
+      var on = !selected[n];
+      if (e.shiftKey && lastN !== null) {
+        var a = Math.min(lastN, n), b = Math.max(lastN, n);
+        for (var k = a; k <= b; k++) selected[k] = on;
+      } else {
+        selected[n] = on;
+      }
+      lastN = n;
+      refresh();
+    });
+  });
+  rangeIn.addEventListener("input", function () {
+    var next = {};
+    rangeIn.value.split(",").forEach(function (part) {
+      var m = /^\\s*(\\d+)\\s*(?:-\\s*(\\d+)\\s*)?$/.exec(part);
+      if (!m) return;
+      var a = Number(m[1]), b = m[2] ? Number(m[2]) : a;
+      for (var k = Math.max(a, 1); k <= Math.min(b, total); k++) next[k] = true;
+    });
+    selected = next;
+    refresh();
+  });
+  rangeIn.addEventListener("blur", refresh);
+  refresh();
   function show(kind, text) {
     clearTimeout(hideTimer);
     box.className = kind;
@@ -134,52 +247,28 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
     box.hidden = false;
     if (kind === "ok") hideTimer = setTimeout(function () { box.hidden = true; }, 4000);
   }
-  function sendToHelper(tspl) {
-    return new Promise(function (resolve, reject) {
-      var done = false;
-      var socket = null;
-      var timer = setTimeout(function () { finish(new Error("The print helper did not answer. Check the printer and try again.")); }, 15000);
-      function finish(err, labels) {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        try { if (socket) socket.close(); } catch (e) {}
-        if (err) reject(err); else resolve(labels || 0);
-      }
-      try { socket = new WebSocket(HELPER); } catch (e) { finish(new Error(DOWN)); return; }
-      socket.onopen = function () { socket.send(JSON.stringify({ type: "print", tspl: tspl })); };
-      socket.onerror = function () { finish(new Error(DOWN)); };
-      socket.onclose = function () { finish(new Error(DOWN)); };
-      socket.onmessage = function (event) {
-        try {
-          var reply = JSON.parse(String(event.data));
-          if (reply.type === "printed") finish(null, reply.labels);
-          else finish(new Error(reply.message || "Printing failed"));
-        } catch (e) {
-          finish(new Error("The print helper gave an answer that could not be read"));
-        }
-      };
-    });
-  }
   btn.onclick = async function () {
+    var nums = picked();
+    if (custom && nums.length === 0) return;
     btn.disabled = true;
     btn.textContent = "Printing...";
     box.hidden = true;
     try {
       var url = new URL(location.href);
       url.searchParams.set("format", "tspl");
+      if (custom) url.searchParams.set("pick", compress(nums));
+      else url.searchParams.delete("pick");
       var res = await fetch(url.toString(), { cache: "no-store", credentials: "same-origin" });
       if (!res.ok) {
         var body = await res.json().catch(function () { return {}; });
         throw new Error(body.error || "Could not get the labels");
       }
-      var sent = await sendToHelper(await res.text());
+      var sent = await window.sendLabelsToPrinter(await res.text());
       show("ok", "Sent " + sent + (sent === 1 ? " label" : " labels") + " to the printer.");
     } catch (err) {
       show("err", err && err.message ? err.message : "Printing failed");
     } finally {
-      btn.disabled = false;
-      btn.textContent = "Print";
+      refresh();
     }
   };
 })();

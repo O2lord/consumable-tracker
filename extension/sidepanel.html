@@ -48,6 +48,12 @@
         </div>
       </header>
 
+      <!-- USB scanner in serial (CDC) mode, read directly with Web Serial. Hidden where the browser lacks it. -->
+      <div id="scanner-row" class="row between" hidden>
+        <span id="scanner-status" class="muted small"></span>
+        <button id="scanner-connect" type="button" class="link">Connect scanner</button>
+      </div>
+
       <nav class="tabs" role="tablist">
         <button id="tab-issue" class="tab active" role="tab">Issue</button>
         <button id="tab-return" class="tab" role="tab">Return</button>
@@ -168,6 +174,7 @@
       </div>
     </div>
 
-    <script src="sidepanel.js"></script>
+    <script src="qz-tray.js"></script>
+<script src="sidepanel.js"></script>
   </body>
 </html>

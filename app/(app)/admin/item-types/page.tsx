@@ -174,9 +174,6 @@ function ItemTypeFields({ row }: { row?: ItemTypeRow }) {
           className={inputClass}
         />
       </Field>
-      <Field label="Pharmacy catalog id (optional)">
-        <input name="pharmacyCatalogId" defaultValue={row?.pharmacyCatalogId ?? ""} className={inputClass} />
-      </Field>
       <Field
         label="Pack size"
         hint="Pieces in one pack. Used to show equivalents and to open a pack when pieces are sent. It cannot be changed once any pieces of this item have been opened or sent."

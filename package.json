@@ -21,7 +21,6 @@
     "db:push": "supabase db push",
     "db:new": "supabase migration new",
     "bootstrap-admin": "node --env-file=.env.local --experimental-strip-types scripts/bootstrap-admin.ts",
-    "import-pharmacy": "vite-node --config vitest.config.ts scripts/import-pharmacy.ts --",
     "print-test-labels": "node --env-file=.env.local --experimental-strip-types scripts/print-test-labels.ts",
     "encrypt-existing": "node --env-file=.env.local --experimental-strip-types scripts/encrypt-existing-patient-fields.ts"
   },

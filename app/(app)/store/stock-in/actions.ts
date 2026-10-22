@@ -1,12 +1,10 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { z } from "zod";
 import { requirePermission } from "@/server/auth/session";
 import { stockIn } from "@/server/services/stock-in.service";
 import { db } from "@/server/db/client";
 import { listActiveItemTypes } from "@/server/services/catalog.service";
-import { receiveGrnLine } from "@/server/services/grn.service";
 import { createDelivery } from "@/server/services/delivery.service";
 import { toFormError } from "@/server/actions/form-result";
 import { formDataToObject, issuesToMessage } from "@/lib/form";
@@ -121,29 +119,4 @@ export async function stockInManyAction(_prev: FormState, formData: FormData): P
   // redirect() works by throwing, so it must stay outside the try block.
   // Every receipt is a delivery with a DV code, so it always lands on the delivery page, even for one item.
   redirect(`/store/stock-in/delivery/${deliveryCode}`);
-}
-
-const receiveGrnLineSchema = z.object({
-  grnRef: z.string().trim().min(1),
-  batchNo: z.string().trim().min(1),
-  itemKey: z.string().trim().min(1),
-  itemTypeId: z.uuid({ error: "Choose the item type this line is" }),
-  locationId: z.uuid({ error: "Choose the store to receive into" }),
-});
-
-/** Receives one line of an imported Pharmacy GRN as a batch, then opens its labels. */
-export async function receiveGrnLineAction(_prev: FormState, formData: FormData): Promise<FormState> {
-  const session = await requirePermission("stock_in");
-
-  const parsed = receiveGrnLineSchema.safeParse(formDataToObject(formData));
-  if (!parsed.success) return { error: issuesToMessage(parsed.error) };
-
-  let batchCode: string;
-  try {
-    const result = await receiveGrnLine(parsed.data, session.userId);
-    batchCode = result.batch.code;
-  } catch (err) {
-    return toFormError(err);
-  }
-  redirect(`/store/stock-in/${batchCode}`);
 }

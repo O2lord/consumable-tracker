@@ -6,24 +6,15 @@ export const createTransferSchema = z
   .object({
     fromLocationId: z.uuid(),
     toLocationId: z.uuid(),
-    /** The matching Pharmacy transfer, if one exists. Its quantity is read from Pharmacy when it is on file; otherwise it is typed. */
-    pharmacyTransferId: z.string().trim().min(1).max(100).optional(),
-    pharmacyQuantity: z.number().int().min(0).max(1_000_000).optional(),
     note: z.string().trim().min(1).max(500).optional(),
   })
   .refine((v) => v.fromLocationId !== v.toLocationId, {
     message: "Send to a different location than you send from",
     path: ["toLocationId"],
-  })
-  .refine((v) => v.pharmacyQuantity === undefined || v.pharmacyTransferId !== undefined, {
-    message: "A Pharmacy quantity needs the Pharmacy transfer number it belongs to",
-    path: ["pharmacyTransferId"],
   });
 export type CreateTransferInput = z.infer<typeof createTransferSchema>;
 
 export const confirmTransferSchema = z.object({
-  /** Needed only when the scanned total differs from the linked Pharmacy transfer. */
-  explanation: z.string().trim().min(3).max(500).optional(),
   /** Who is carrying the stock. Typed by the store keeper; required, because "who carried it" is the first question when a receipt comes up short. */
   carriedByName: z
     .string({ error: "Enter the name of the person carrying the stock" })

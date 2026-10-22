@@ -24,11 +24,11 @@ export type BuiltInRole = (typeof USER_ROLES)[number];
 /** A role's code (consumables.roles.code): one of the built-in codes, or one made for a custom role. */
 export type UserRole = string;
 
-export const BATCH_SOURCES = ["PHARMACY_GRN", "MANUAL"] as const;
+export const BATCH_SOURCES = ["MANUAL"] as const;
 export type BatchSource = (typeof BATCH_SOURCES)[number];
 
 /** Where a location maps into the EMR (locations.external_system). */
-export const EXTERNAL_SYSTEMS = ["PHARMACY", "LAB_DESTINATION", "WARD"] as const;
+export const EXTERNAL_SYSTEMS = ["LAB_DESTINATION", "WARD"] as const;
 export type ExternalSystem = (typeof EXTERNAL_SYSTEMS)[number];
 
 /**
@@ -207,16 +207,5 @@ export type InvestigationQueue = (typeof INVESTIGATION_QUEUES)[number];
 export const IMPORT_PAYMENT_STATUSES = ["PAID", "UNPAID", "CHARGED_TO_ADMISSION"] as const;
 export type ImportPaymentStatus = (typeof IMPORT_PAYMENT_STATUSES)[number];
 
-export const IMPORT_KINDS = ["INVESTIGATIONS", "PHARMACY_INVENTORY", "PHARMACY_GRN", "PHARMACY_TRANSFERS"] as const;
+export const IMPORT_KINDS = ["INVESTIGATIONS"] as const;
 export type ImportKind = (typeof IMPORT_KINDS)[number];
-
-/** pharmacy_imports.kind: a stock-on-hand row, one line of a GRN, or one Pharmacy transfer. */
-export const PHARMACY_IMPORT_KINDS = ["INVENTORY", "GRN_LINE", "TRANSFER"] as const;
-export type PharmacyImportKind = (typeof PHARMACY_IMPORT_KINDS)[number];
-
-/** The sync_log.kind that goes with each Pharmacy export. */
-export const PHARMACY_SYNC_KIND: Record<PharmacyImportKind, ImportKind> = {
-  INVENTORY: "PHARMACY_INVENTORY",
-  GRN_LINE: "PHARMACY_GRN",
-  TRANSFER: "PHARMACY_TRANSFERS",
-};

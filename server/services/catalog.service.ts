@@ -121,7 +121,6 @@ export async function createItemType(input: ItemTypeInput, conn: DbOrTx = db()) 
         containerType: input.containerType ?? null,
         unitOfMeasure: input.unitOfMeasure,
         reorderLevel: input.reorderLevel,
-        pharmacyCatalogId: input.pharmacyCatalogId ?? null,
         allowedServiceRoles: input.allowedServiceRoles.length > 0 ? input.allowedServiceRoles : null,
         packSize: input.packSize,
         packSizeConfirmed: input.packSizeConfirmed,
@@ -171,7 +170,6 @@ export async function updateItemType(input: ItemTypeUpdate, conn: DbOrTx = db())
       containerType: input.containerType ?? null,
       unitOfMeasure: input.unitOfMeasure,
       reorderLevel: input.reorderLevel,
-      pharmacyCatalogId: input.pharmacyCatalogId ?? null,
       allowedServiceRoles: input.allowedServiceRoles.length > 0 ? input.allowedServiceRoles : null,
       // Pack size is display information until pieces move; after that it is locked (checked above).
       packSize: input.packSize,

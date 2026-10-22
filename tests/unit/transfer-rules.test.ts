@@ -20,7 +20,6 @@ import {
   isExpired,
   isScanLine,
   itemResolution,
-  pharmacyMismatchNote,
   receiptOutcome,
   statusAfterClose,
   type UnitFacts,
@@ -107,21 +106,6 @@ describe("transfer status", () => {
       /Cannot confirm: this transfer is received with discrepancy/,
     );
     expect(() => assertStatus("CANCELLED", ["DRAFT"], "confirm")).toThrow(TransferStatusError);
-  });
-});
-
-describe("Pharmacy quantity check", () => {
-  it("needs no explanation when there is no linked transfer or the totals match", () => {
-    expect(pharmacyMismatchNote(50, null, undefined)).toBeNull();
-    expect(pharmacyMismatchNote(50, 50, undefined)).toBeNull();
-  });
-  it("demands an explanation when the totals differ", () => {
-    expect(() => pharmacyMismatchNote(48, 50, undefined)).toThrow(/scanned 48 but .* says 50/);
-    expect(() => pharmacyMismatchNote(48, 50, "  ")).toThrow(ValidationError);
-    expect(() => pharmacyMismatchNote(48, 50, "ab")).toThrow(ValidationError);
-  });
-  it("returns the trimmed explanation to store", () => {
-    expect(pharmacyMismatchNote(48, 50, "  two bottles cracked  ")).toBe("two bottles cracked");
   });
 });
 

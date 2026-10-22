@@ -204,7 +204,6 @@ export async function confirmTransferAction(_prev: FormState, formData: FormData
   const code = String(raw.code ?? "");
   try {
     const r = await confirmTransfer(String(raw.transferId ?? ""), session.userId, {
-      explanation: raw.explanation === undefined ? undefined : String(raw.explanation),
       carriedByName: String(raw.carriedByName ?? ""),
     });
     refresh(code);

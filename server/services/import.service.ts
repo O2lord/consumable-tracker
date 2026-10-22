@@ -2,11 +2,10 @@ import "server-only";
 import { desc, eq, sql } from "drizzle-orm";
 import type { DbOrTx } from "../audit/events";
 import { db } from "../db/client";
-import { ENC_CONTEXT, investigationImports, locations, pharmacyImports, syncLog } from "../db/schema";
+import { ENC_CONTEXT, investigationImports, syncLog } from "../db/schema";
 import { ValidationError } from "../domain/errors";
-import { PHARMACY_SYNC_KIND, type Actor, type InvestigationQueue, type PharmacyImportKind } from "../domain/types";
+import type { Actor, InvestigationQueue } from "../domain/types";
 import { ImportFormatError, parseInvestigationRows, type RowError } from "../../lib/import-parse";
-import { grnRefFromFileName, parsePharmacyRows } from "../../lib/pharmacy-parse";
 import { readRows, UnsupportedFileError } from "../../lib/spreadsheet";
 import { decryptField, mrnBlindIndex } from "../security/field-crypto";
 import { pageInfo, type Paged } from "../../lib/pagination";
@@ -159,228 +158,6 @@ export async function importInvestigations(
   });
 }
 
-export interface PharmacyImportSummary {
-  syncLogId: string;
-  kind: PharmacyImportKind;
-  fileName: string;
-  headerRow: number;
-  rowsTotal: number;
-  inserted: number;
-  updated: number;
-  rejected: number;
-  /** The first rejected rows (the log keeps no more than this either). */
-  errors: RowError[];
-}
-
-const normText = (s: string | null | undefined) => (s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
-
-/**
- * Loads a Pharmacy export: stock on hand (INVENTORY), one GRN (GRN_LINE) or the transfers list (TRANSFER).
- * Like the investigations import it is an upsert, so a newer export updates what is loaded and nothing is
- * deleted. An inventory export says nothing of where the stock is, so the caller names the location
- * (or the file carries a location column that matches a tracker location by name, code or external id).
- * The GRN number comes from a grn_ref column, else the form, else the file name (grn-GRNS00002.xlsx).
- */
-export async function importPharmacy(
-  args: {
-    kind: PharmacyImportKind;
-    fileName: string;
-    data: ArrayBuffer;
-    locationId?: string | null;
-    grnRef?: string | null;
-  },
-  actor: Actor,
-  conn: DbOrTx = db(),
-): Promise<PharmacyImportSummary> {
-  const rows = await loadRows(args.fileName, args.data);
-
-  let parsed;
-  try {
-    parsed = parsePharmacyRows(args.kind, rows, { grnRef: args.grnRef || grnRefFromFileName(args.fileName) });
-  } catch (err) {
-    if (err instanceof ImportFormatError) throw new ValidationError(err.message);
-    throw err;
-  }
-
-  const errors: RowError[] = [...parsed.errors];
-  const locationNames = new Set<string>();
-  let items = parsed.records.map((r) => ({
-    r,
-    locationId: null as string | null,
-    locationName: null as string | null,
-    key: r.naturalKey,
-  }));
-
-  if (args.kind === "INVENTORY") {
-    const all = await conn
-      .select({ id: locations.id, name: locations.name, code: locations.code, externalId: locations.externalId })
-      .from(locations);
-    const byText = new Map<string, (typeof all)[number]>();
-    for (const l of all) {
-      for (const text of [l.name, l.code, l.externalId]) {
-        const k = normText(text);
-        if (k && !byText.has(k)) byText.set(k, l);
-      }
-    }
-    const fixed = args.locationId ? all.find((l) => l.id === args.locationId) : undefined;
-    if (args.locationId && !fixed) throw new ValidationError("That location does not exist");
-    if (!fixed && !parsed.records.some((r) => r.locationText)) {
-      throw new ValidationError("Choose which location this inventory file is for: the file has no location column.");
-    }
-
-    const resolved: typeof items = [];
-    for (const r of parsed.records) {
-      let loc = fixed;
-      if (r.locationText) {
-        loc = byText.get(normText(r.locationText));
-        if (!loc) {
-          errors.push({
-            row: r.row,
-            message: `location "${r.locationText}" is not a tracker location (it must match a location's name, code or external id)`,
-          });
-          continue;
-        }
-      }
-      if (!loc) {
-        errors.push({ row: r.row, message: "no location: the file has none and none was chosen" });
-        continue;
-      }
-      locationNames.add(loc.name);
-      resolved.push({ r, locationId: loc.id, locationName: loc.name, key: `${loc.id}|${r.naturalKey}` });
-    }
-    items = resolved;
-  }
-
-  // Two lines can only collide after the location is known; the later one wins, as in the parser.
-  const lastRowFor = new Map<string, number>();
-  for (const x of items) lastRowFor.set(x.key, x.r.row);
-  items = items.filter((x) => {
-    if (lastRowFor.get(x.key) === x.r.row) return true;
-    errors.push({
-      row: x.r.row,
-      message: `this line appears again later in the file (row ${lastRowFor.get(x.key)}); the later row was used`,
-    });
-    return false;
-  });
-
-  errors.sort((a, b) => a.row - b.row);
-  if (items.length === 0) {
-    const why = errors.slice(0, 3).map((e) => `row ${e.row}: ${e.message}`).join(" | ");
-    throw new ValidationError(`No valid rows to import.${why ? ` ${why}` : ""}`);
-  }
-
-  const startedAt = new Date();
-  const rowsTotal = items.length + errors.length;
-  const keptErrors = errors.slice(0, ERRORS_KEPT);
-  return conn.transaction(async (tx) => {
-    const [log] = await tx
-      .insert(syncLog)
-      .values({ kind: PHARMACY_SYNC_KIND[args.kind], fileName: args.fileName, importedBy: actor.userId, startedAt })
-      .returning({ id: syncLog.id });
-
-    let inserted = 0;
-    let updated = 0;
-    for (let i = 0; i < items.length; i += CHUNK) {
-      const chunk = items.slice(i, i + CHUNK).map(({ r, locationId, locationName, key }) => ({
-        kind: args.kind,
-        naturalKey: key,
-        pharmacyRef: r.pharmacyRef,
-        locationId,
-        locationLabel: locationName ?? r.locationText,
-        destinationLabel: r.destinationText,
-        genericName: r.genericName,
-        strength: r.strength,
-        brand: r.brand,
-        itemLabel: r.itemLabel,
-        itemKey: r.itemKey,
-        batchNo: r.batchNo,
-        expiryDate: r.expiryDate,
-        quantity: r.quantity,
-        unitCost: r.unitCost,
-        unit: r.unit,
-        category: r.category,
-        supplier: r.supplier,
-        transferType: r.transferType,
-        status: r.status,
-        requestedBy: r.requestedBy,
-        requestedAt: r.requestedAt,
-        lines: r.lines,
-        raw: r.raw,
-        syncLogId: log.id,
-        importedAt: startedAt,
-      }));
-      const result = await tx
-        .insert(pharmacyImports)
-        .values(chunk)
-        .onConflictDoUpdate({
-          target: [pharmacyImports.kind, pharmacyImports.naturalKey],
-          set: {
-            pharmacyRef: sql`excluded.pharmacy_ref`,
-            locationId: sql`excluded.location_id`,
-            locationLabel: sql`excluded.location_label`,
-            destinationLabel: sql`excluded.destination_label`,
-            genericName: sql`excluded.generic_name`,
-            strength: sql`excluded.strength`,
-            brand: sql`excluded.brand`,
-            itemLabel: sql`excluded.item_label`,
-            itemKey: sql`excluded.item_key`,
-            batchNo: sql`excluded.batch_no`,
-            expiryDate: sql`excluded.expiry_date`,
-            quantity: sql`excluded.quantity`,
-            unitCost: sql`excluded.unit_cost`,
-            unit: sql`excluded.unit`,
-            category: sql`excluded.category`,
-            supplier: sql`excluded.supplier`,
-            transferType: sql`excluded.transfer_type`,
-            status: sql`excluded.status`,
-            requestedBy: sql`excluded.requested_by`,
-            requestedAt: sql`excluded.requested_at`,
-            lines: sql`excluded.lines`,
-            raw: sql`excluded.raw`,
-            syncLogId: sql`excluded.sync_log_id`,
-            importedAt: sql`excluded.imported_at`,
-          },
-        })
-        .returning({ wasInserted: sql<boolean>`(xmax = 0)` });
-      for (const r of result) {
-        if (r.wasInserted) inserted++;
-        else updated++;
-      }
-    }
-
-    await tx
-      .update(syncLog)
-      .set({
-        rowsTotal,
-        rowsInserted: inserted,
-        rowsUpdated: updated,
-        rowsRejected: errors.length,
-        errors: keptErrors,
-        detail: {
-          kind: args.kind,
-          headerRow: parsed.headerRow,
-          blankRows: parsed.blankRows,
-          locationNames: [...locationNames],
-          grnRef: args.kind === "GRN_LINE" ? (items[0]?.r.pharmacyRef ?? null) : null,
-        },
-        finishedAt: new Date(),
-      })
-      .where(eq(syncLog.id, log.id));
-
-    return {
-      syncLogId: log.id,
-      kind: args.kind,
-      fileName: args.fileName,
-      headerRow: parsed.headerRow,
-      rowsTotal,
-      inserted,
-      updated,
-      rejected: errors.length,
-      errors: keptErrors,
-    };
-  });
-}
-
 export interface ImportHistoryRow {
   id: string;
   kind: string;
@@ -413,16 +190,9 @@ export async function listImportHistory(limit = 30, conn: DbOrTx = db()): Promis
 }
 
 function describeImport(kind: string, detail: Record<string, unknown>): string {
-  const names = Array.isArray(detail.locationNames) ? (detail.locationNames as string[]).join(", ") : "";
   switch (kind) {
     case "INVESTIGATIONS":
       return `Investigations${typeof detail.queue === "string" ? ` (${detail.queue})` : ""}`;
-    case "PHARMACY_INVENTORY":
-      return `Pharmacy inventory${names ? `: ${names}` : ""}`;
-    case "PHARMACY_GRN":
-      return `Pharmacy GRN${typeof detail.grnRef === "string" ? ` ${detail.grnRef}` : ""}`;
-    case "PHARMACY_TRANSFERS":
-      return "Pharmacy transfers";
     default:
       return kind;
   }

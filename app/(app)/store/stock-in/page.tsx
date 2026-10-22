@@ -7,7 +7,6 @@ import { parsePage } from "@/lib/pagination";
 import { StockInForm } from "./StockInForm";
 import { describeRequestQuantity } from "@/lib/pack-size";
 import {
-  calloutClass,
   linkButtonClass,
   pageSubtitleClass,
   pageTitleClass,
@@ -76,13 +75,6 @@ export default async function StockInPage({
           defaultStoreId={homeStore?.id}
         />
       )}
-
-      <p className={calloutClass}>
-        Received something Pharmacy has already recorded?{" "}
-        <Link href="/store/stock-in/grn" className="font-semibold text-side-title underline">
-          Receive it from a Pharmacy GRN
-        </Link>
-      </p>
 
       <section className={`${panelClass} overflow-x-auto`}>
         <h2 className="mb-3 text-[17px] font-semibold">Recent deliveries</h2>

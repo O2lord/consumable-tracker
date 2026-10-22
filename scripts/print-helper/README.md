@@ -109,15 +109,31 @@ helper can be started by hand instead. This does exactly what the installer does
 
 **Make it start at login** (do this only after printing works)
 
-1. In PowerShell run `where pythonw` and note the path it prints (it differs between PCs).
-2. Press Win+R, type `shell:startup`, Enter. In that folder choose New > Shortcut and paste this as the location,
-   with your own `pythonw.exe` path, script folder, printer name and app address:
+1. Find the path of `pythonw.exe` (it differs between PCs). In PowerShell, `where` is a built-in alias and prints
+   nothing, so type `where.exe pythonw` (with the `.exe`) in Command Prompt or PowerShell. If the window closes before
+   you can read it, open Command Prompt from the Start menu first and run the command there.
+   - It may print more than one line. A path under `...\Microsoft\WindowsApps\` is only a Microsoft Store shortcut
+     and may point at a Python that does not have the helper's packages. Use the real install instead, for example
+     `C:\Users\<you>\AppData\Local\Python\bin\pythonw.exe` or
+     `C:\Users\<you>\AppData\Local\Programs\Python\Python312\pythonw.exe`. Use the Python that you ran
+     `pip install websockets pywin32` with.
+   - If `where.exe` finds nothing, use File Explorer instead. In Task Manager > Details, right-click `python.exe` (or
+     `pythonw.exe`) > **Open file location**, click the address bar, copy the folder path and add `\pythonw.exe`.
+   - Check the file is really there before using the path.
+2. Before making the shortcut, run the same command by hand with `python.exe` (not `pythonw.exe`, so any error shows
+   on screen) and check that it prints `Print bridge on ws://localhost:8767` and that a label prints. Then close it.
+3. Press Win+R, type `shell:startup`, Enter. In that folder choose New > Shortcut and paste this as the location,
+   with your own `pythonw.exe` path, script folder, printer name, app address and extension ID:
    ```
-   "C:\Users\<you>\AppData\Local\Programs\Python\Python312\pythonw.exe" "C:\PrintHelper\print_bridge.py" --printer "Xprinter XP-365B" --origin https://uath-consumables.netlify.app
+   "C:\Users\<you>\AppData\Local\Python\bin\pythonw.exe" "C:\PrintHelper\print_bridge.py" --printer "Xprinter XP-365B" --origin https://uath-consumables.netlify.app --extension-id <the 32 letters>
    ```
-3. Name it `Label Print Helper`, open its Properties and set Run to **Minimized**.
-4. Sign out and back in, then check Task Manager > Details for `pythonw.exe`. Once the shortcut runs the helper,
-   closing the PowerShell window from step 4 no longer matters.
+4. Name it `Label Print Helper`, open its Properties and set Run to **Minimized**.
+5. End any copy already running (Task Manager > Details > `pythonw.exe` > End task), then sign out and back in, or
+   restart. Without opening any window, check Task Manager > Details for `pythonw.exe`, then print a label. Once the
+   shortcut runs the helper, closing the PowerShell window from step 4 above no longer matters.
+
+If a window flashes and `pythonw.exe` is not in Task Manager afterwards, the shortcut line has a typo (a wrong path, a
+missing quote, or a wrong printer name). Compare it with the example, and read `%USERPROFILE%\print_helper.log`.
 
 **Changing anything later** (printer, app address, extension ID): end `pythonw.exe` in Task Manager > Details first,
 because the old copy keeps port 8767 busy, then edit the shortcut's target and start it again. The extension ID is
@@ -234,6 +250,27 @@ permission prompt and sign in. The extension only acts on the staff portal pages
 
 The ID stays the same as long as the extension is installed from the same source. An extension loaded unpacked from a
 folder can get a different ID on each PC, so it is simpler to give every PC the same installed copy.
+
+**Updating the extension on a PC:** keep the `extension` folder in a git clone (a sparse checkout of just `extension/`
+is enough) in one fixed place, load that folder once with **Load unpacked**, then for each update pull the changes
+(VS Code > Source Control > Pull) and click the refresh icon on the extension's card in `chrome://extensions`. Always
+load it from the same folder: the extension ID comes from the folder path, and the helper only allows the ID it was
+given (`--extension-id`). Changes to the server (the app) are not part of this: they reach the lab only after the app
+is redeployed, and an old server answers a new extension with errors such as "expected string, received undefined".
+
+### Issue from stock, and several bottles at once
+
+- **Issue from stock and print** (Issue tab) takes a bottle from stock at the user's location (earliest expiry first,
+  expired bottles skipped, only a container type the test accepts), issues it to the open investigation and prints its
+  label straight away. If nothing suitable is in stock it says so and prints nothing.
+- When the same patient has other pending tests that need a **different bottle**, the panel lists them under "These
+  need a different bottle". Ticked tests that can share a bottle are grouped (two EDTA tests get one EDTA bottle), and
+  the others get one bottle each. The button then reads "Issue all N bottles from stock and print", and scanning asks
+  for the next bottle one at a time.
+- All the labels go through this same helper, one after the other (the pop-up button reads "Print 2 labels"). If one
+  bottle cannot be issued (for example none in stock), the ones already issued stay issued, the error stays on screen
+  with a button to print their labels, and the rest can be scanned.
+- The items used (swabs and so on) are only issued with the open investigation's bottle.
 
 ---
 

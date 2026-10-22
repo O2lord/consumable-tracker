@@ -12,10 +12,7 @@ export async function createTransferAction(_prev: FormState, formData: FormData)
   const session = await requirePermission("dispatch");
 
   const raw = formDataToObject(formData);
-  const parsed = createTransferSchema.safeParse({
-    ...raw,
-    pharmacyQuantity: raw.pharmacyQuantity === undefined ? undefined : Number(raw.pharmacyQuantity),
-  });
+  const parsed = createTransferSchema.safeParse(raw);
   if (!parsed.success) return { error: issuesToMessage(parsed.error) };
 
   let code: string;

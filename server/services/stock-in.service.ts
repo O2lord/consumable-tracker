@@ -18,17 +18,15 @@ export interface StockInResult {
   serials: string[];
 }
 
-/** Where a batch came from. Manual entry unless it is received from an imported Pharmacy GRN line. */
+/** Where a batch came from. Every batch is entered by hand, optionally as a line of a delivery. */
 export interface BatchOrigin {
-  source: "MANUAL" | "PHARMACY_GRN";
-  pharmacyGrnId?: string | null;
-  pharmacyBatchId?: string | null;
+  source: "MANUAL";
   /** The delivery this batch is a line of (deliveries.id). Left out for a one-off receipt. */
   deliveryId?: string | null;
 }
 
 /**
- * Receives a batch into a store (manual entry, source = MANUAL, unless `origin` says it came from a GRN).
+ * Receives a batch into a store (manual entry, source = MANUAL).
  * SERIAL item types get one unit and one STOCKED event per serial.
  * QUANTITY item types get the batch and a single STOCKED event carrying the quantity.
  * Everything happens in one transaction. The caller is responsible for checking that
@@ -82,8 +80,6 @@ export async function stockIn(
         supplier: input.supplier,
         quantity: input.quantity,
         source: origin.source,
-        pharmacyGrnId: origin.pharmacyGrnId ?? null,
-        pharmacyBatchId: origin.pharmacyBatchId ?? null,
         deliveryId: origin.deliveryId ?? null,
         receivedBy: userId,
       })
@@ -97,7 +93,7 @@ export async function stockIn(
       toState: "IN_STOCK" as const,
       occurredAt,
       deviceId: input.deviceId,
-      payload: { batchCode: batch.code, ...(origin.pharmacyGrnId ? { pharmacyGrnId: origin.pharmacyGrnId } : {}) },
+      payload: { batchCode: batch.code },
     };
 
     if (itemType.trackingMode === "QUANTITY") {

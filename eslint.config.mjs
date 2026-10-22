@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // QZ Tray's own library (downloaded, see scripts/qz/README.md), not our code.
+    "extension/qz-tray.js",
   ]),
 ]);
 

@@ -13,6 +13,7 @@ import {
   thClass,
 } from "@/components/ui/styles";
 import { LabelButtons } from "../LabelButtons";
+import { BatchTabs } from "./BatchTabs";
 import { describeRequestQuantity, isPackUnit } from "@/lib/pack-size";
 
 export const metadata = { title: "Batch labels" };
@@ -32,6 +33,15 @@ export default async function BatchLabelsPage({ params }: { params: Promise<{ ba
   return (
     <div className="flex flex-col gap-5">
       <div>
+        <Link
+          href={batch.deliveryCode ? `/store/stock-in/delivery/${batch.deliveryCode}` : "/store/stock-in"}
+          className="mb-4 flex w-fit items-center gap-1.5 text-sm font-semibold text-side-title hover:underline"
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+            <path d="M10 3L5 8l5 5" />
+          </svg>
+          Back
+        </Link>
         <span className="inline-flex items-center gap-1.5 rounded-full bg-ok-soft px-2.5 py-0.5 text-xs font-semibold text-ok">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
             <path d="M3 8.5l3 3 7-7" />
@@ -42,7 +52,7 @@ export default async function BatchLabelsPage({ params }: { params: Promise<{ ba
           <h1 className={pageTitleClass}>
             {isSerial ? batch.quantity : describeRequestQuantity(batch.quantity, batch.unit, false)} x {batch.itemName}
           </h1>
-          <LabelButtons batch={batch.code} only="batch" label="Print label" single />
+          <LabelButtons batch={batch.code} only="batch" label="Print Batch Label" single />
         </div>
         <p className={pageSubtitleClass}>
           {!isSerial && isPackUnit(batch.unit) && batch.packSize > 1
@@ -56,23 +66,46 @@ export default async function BatchLabelsPage({ params }: { params: Promise<{ ba
         </p>
       </div>
 
+      <BatchTabs
+        labels={
+          <>
       {isSerial || hasPacks ? (
-        <section className={`${panelClass} flex flex-col gap-3`}>
-          <h2 className="text-[17px] font-semibold">
-            {isSerial
-              ? `Bottle labels (${batch.quantity})`
-              : `${packNoun === "roll" ? "Roll" : "Pack"} labels (${batch.packCount})`}
-          </h2>
-          <p className="text-sm text-zinc-500">
-            {isSerial
-              ? "One label per bottle. The box label prints separately, next to the title: stick it on the box, then scan it at dispatch before scanning the bottles."
-              : `One label per ${packNoun}. The batch label prints separately, next to the title. Stick each label on its own ${packNoun} so it can be scanned on its own.`}
-          </p>
-          <LabelButtons
-            batch={batch.code}
-            only="items"
-            label={isSerial ? "Print bottle labels" : `Print ${packNoun} labels`}
-          />
+        <section className={`${panelClass} flex flex-col gap-4 lg:flex-row-reverse lg:items-center lg:justify-between lg:gap-8`}>
+          <div className="shrink-0">
+            <LabelButtons
+              batch={batch.code}
+              only="items"
+              label={isSerial ? "Print bottle labels" : `Print ${packNoun} labels`}
+            />
+          </div>
+          {isSerial ? (
+            <div className="min-w-0 lg:flex-1">
+              <h3 className="mb-2 text-sm font-semibold">First serials in this batch</h3>
+              <ul className="flex flex-wrap gap-2">
+                {batch.sampleSerials.map((s) => (
+                  <li key={s} className={monoChipClass}>
+                    {s}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <div className="min-w-0 lg:flex-1">
+              <h3 className="mb-2 text-sm font-semibold">First {packNoun} codes in this batch</h3>
+              <ul className="flex flex-wrap gap-2">
+                {batch.samplePacks.map((c) => (
+                  <li key={c} className={monoChipClass}>
+                    {c}
+                  </li>
+                ))}
+              </ul>
+              {batch.packCount > batch.samplePacks.length ? (
+                <p className="mt-3 text-sm text-zinc-500">
+                  Showing {batch.samplePacks.length} of {batch.packCount}.
+                </p>
+              ) : null}
+            </div>
+          )}
         </section>
       ) : (
         <section className={`${panelClass} flex flex-col gap-2`}>
@@ -83,37 +116,10 @@ export default async function BatchLabelsPage({ params }: { params: Promise<{ ba
           </p>
         </section>
       )}
-
-      {isSerial ? (
-        <section className={panelClass}>
-          <h2 className="mb-3 text-[17px] font-semibold">First serials in this batch</h2>
-          <ul className="flex flex-wrap gap-2">
-            {batch.sampleSerials.map((s) => (
-              <li key={s} className={monoChipClass}>
-                {s}
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : hasPacks ? (
-        <section className={panelClass}>
-          <h2 className="mb-3 text-[17px] font-semibold">First {packNoun} codes in this batch</h2>
-          <ul className="flex flex-wrap gap-2">
-            {batch.samplePacks.map((c) => (
-              <li key={c} className={monoChipClass}>
-                {c}
-              </li>
-            ))}
-          </ul>
-          {batch.packCount > batch.samplePacks.length ? (
-            <p className="mt-3 text-sm text-zinc-500">
-              Showing {batch.samplePacks.length} of {batch.packCount}. The PDF includes all of them.
-            </p>
-          ) : null}
-        </section>
-      ) : null}
-
-      {parts.length > 0 ? (
+          </>
+        }
+        history={
+        parts.length > 0 ? (
         <section className={`${panelClass} overflow-x-auto`}>
           <h2 className="mb-3 text-[17px] font-semibold">Where this batch went</h2>
           <table className={tableClass}>
@@ -141,21 +147,14 @@ export default async function BatchLabelsPage({ params }: { params: Promise<{ ba
             </tbody>
           </table>
         </section>
-      ) : null}
-
-      <div className="flex flex-wrap gap-6 text-sm font-semibold text-side-title">
-        {batch.deliveryCode ? (
-          <Link href={`/store/stock-in/delivery/${batch.deliveryCode}`} className="underline">
-            Back to delivery {batch.deliveryCode}
-          </Link>
-        ) : null}
-        <Link href="/store/stock-in" className="underline">
-          Receive another delivery
-        </Link>
-        <Link href="/store/label-check" className="underline">
-          Check a printed label
-        </Link>
-      </div>
+        ) : (
+          <section className={panelClass}>
+            <h2 className="mb-1 text-[17px] font-semibold">Where this batch went</h2>
+            <p className="text-sm text-zinc-500">None of this batch has been sent anywhere yet.</p>
+          </section>
+        )
+        }
+      />
     </div>
   );
 }

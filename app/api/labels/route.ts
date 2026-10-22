@@ -4,7 +4,7 @@ import { can } from "@/server/auth/permissions";
 import { DomainError } from "@/server/domain/errors";
 import { printLabels, renderPdf, renderTspl, renderTsplPreview, renderZpl, type LabelTarget } from "@/server/services/labels.service";
 
-// GET  /api/labels?batch=BT...|serial=CT...|delivery=DV...&format=pdf|zpl|tspl|preview[&layout=label|a4][&only=...]  -> file
+// GET  /api/labels?batch=BT...|serial=CT...|delivery=DV...&format=pdf|zpl|tspl|preview[&layout=label|a4]&only=...][&pick=1,3,5-7]  -> file
 // POST /api/labels  { batch } or { serial } or { delivery }, with optional { only }                       -> prints (USB queue as TSPL, or network Zebra as ZPL)
 //
 // `only` narrows a delivery to its own label (delivery) or its batch labels (batches), and a batch to its own
@@ -40,6 +40,26 @@ function targetFrom(
   return null;
 }
 
+/**
+ * `pick` chooses labels by their position in the preview, counting from 1: "1,3,5-7". Leave it out for all of them.
+ * Returns undefined when absent, an error string when malformed.
+ */
+function parsePick(raw: unknown): number[] | undefined | { error: string } {
+  if (typeof raw === "number") raw = String(raw);
+  if (Array.isArray(raw)) raw = raw.join(",");
+  if (typeof raw !== "string" || raw.trim() === "") return undefined;
+  const out = new Set<number>();
+  for (const part of raw.split(",")) {
+    const m = /^\s*(\d+)\s*(?:-\s*(\d+)\s*)?$/.exec(part);
+    if (!m) return { error: "pick must look like 1,3,5-7" };
+    const a = Number(m[1]);
+    const b = m[2] ? Number(m[2]) : a;
+    if (a < 1 || b < a || b - a > 5000) return { error: "pick has a position out of range" };
+    for (let n = a; n <= b; n++) out.add(n);
+  }
+  return [...out].sort((x, y) => x - y);
+}
+
 function failure(err: unknown) {
   if (err instanceof DomainError) {
     const status = err.code === "NOT_FOUND" ? 404 : err.code === "CONFIGURATION" ? 500 : 400;
@@ -59,9 +79,11 @@ export async function GET(request: NextRequest) {
   if ("error" in target) return NextResponse.json({ error: target.error }, { status: 400 });
 
   const format = params.get("format") ?? "pdf";
+  const pick = parsePick(params.get("pick"));
+  if (pick && !Array.isArray(pick)) return NextResponse.json({ error: pick.error }, { status: 400 });
   try {
     if (format === "zpl") {
-      const { zpl, name } = await renderZpl(target);
+      const { zpl, name } = await renderZpl(target, pick);
       return new Response(zpl, {
         headers: {
           "Content-Type": "text/plain; charset=utf-8",
@@ -77,7 +99,7 @@ export async function GET(request: NextRequest) {
       });
     }
     if (format === "tspl") {
-      const { tspl, name } = await renderTspl(target);
+      const { tspl, name } = await renderTspl(target, pick);
       return new Response(tspl, {
         headers: {
           "Content-Type": "text/plain; charset=utf-8",
@@ -88,7 +110,7 @@ export async function GET(request: NextRequest) {
     }
     if (format === "pdf") {
       const layout = params.get("layout") === "a4" ? "a4" : "label";
-      const { bytes, name } = await renderPdf(target, layout);
+      const { bytes, name } = await renderPdf(target, layout, pick);
       return new Response(bytes as unknown as BodyInit, {
         headers: {
           "Content-Type": "application/pdf",
@@ -112,13 +134,16 @@ export async function POST(request: NextRequest) {
     serial?: unknown;
     delivery?: unknown;
     only?: unknown;
+    pick?: unknown;
   };
   const target = targetFrom(body.batch, body.serial, body.delivery, body.only);
   if (!target) return NextResponse.json({ error: "Give a batch, a serial or a delivery" }, { status: 400 });
   if ("error" in target) return NextResponse.json({ error: target.error }, { status: 400 });
+  const pick = parsePick(body.pick);
+  if (pick && !Array.isArray(pick)) return NextResponse.json({ error: pick.error }, { status: 400 });
 
   try {
-    const sent = await printLabels(target);
+    const sent = await printLabels(target, pick);
     return NextResponse.json({ ok: true, sent });
   } catch (err) {
     if (err instanceof DomainError) return failure(err);

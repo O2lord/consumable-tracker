@@ -122,25 +122,6 @@ export function assertStatus(current: TransferStatus, allowed: readonly Transfer
 }
 
 /**
- * A transfer linked to a Pharmacy transfer cannot be confirmed with a different total
- * without a recorded explanation. Returns the explanation to store, or null when none is needed.
- */
-export function pharmacyMismatchNote(
-  total: number,
-  pharmacyQuantity: number | null,
-  explanation: string | undefined,
-): string | null {
-  if (pharmacyQuantity === null || total === pharmacyQuantity) return null;
-  const text = explanation?.trim();
-  if (!text || text.length < 3) {
-    throw new ValidationError(
-      `You scanned ${total} but the linked Pharmacy transfer says ${pharmacyQuantity}. Explain the difference to continue`,
-    );
-  }
-  return text;
-}
-
-/**
  * Blind count rule: the counter has not been shown the expected figure. A count above what was
  * dispatched cannot be right, so it is bounced back for a recount (revealing only "too high").
  */

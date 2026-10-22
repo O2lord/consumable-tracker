@@ -1322,6 +1322,120 @@ function sendToPrintHelper(tspl) {
   });
 }
 
+// --- QZ Tray ---------------------------------------------------------------------------------------
+// QZ Tray (https://qz.io) is tried first, then the print helper above, and the helper only when QZ Tray cannot be
+// reached (so a label never prints twice). The library file qz-tray.js must sit next to this file: an extension
+// cannot load it from the internet (see scripts/qz/README.md). Without the file the helper is used, as before.
+// Keep the printer name and rules in step with lib/print-bridge.ts.
+const QZ_PRINTER_MATCH = "Xprinter_XP_365B";
+const QZ_CONNECT_TIMEOUT_MS = 60_000; // long enough for a person to click Allow on QZ Tray's popup
+const QZ_RETRY_AFTER_MS = 30_000;
+let qzDownUntil = 0;
+let qzSigningConfigured = false;
+
+/** QZ Tray is reachable but the print failed: shown as is, never retried on the helper. */
+class QzPrintError extends Error {}
+
+function qzNormalise(name) {
+  return String(name).toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function qzWithTimeout(promise, ms, message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+/** Signs the requests with the tracker's certificate so QZ Tray can remember "Allow". Anonymous when the server has none. */
+function setupQzSigning() {
+  if (qzSigningConfigured) return;
+  qzSigningConfigured = true;
+  qz.security.setSignatureAlgorithm("SHA512");
+  qz.security.setCertificatePromise((resolve, reject) => {
+    api("/api/qz/certificate", { as: "blob" })
+      .then((blob) => blob.text())
+      .then(resolve, reject);
+  });
+  qz.security.setSignaturePromise((toSign) => (resolve, reject) => {
+    api("/api/qz/sign", { method: "POST", body: { request: toSign }, as: "blob" })
+      .then((blob) => blob.text())
+      .then(resolve, reject);
+  });
+}
+
+async function connectQz() {
+  if (typeof qz === "undefined") throw new Error("qz-tray.js is not in the extension folder");
+  setupQzSigning();
+  if (!qz.websocket.isActive()) {
+    await qzWithTimeout(
+      qz.websocket.connect({ retries: 0, delay: 0, usingSecure: true }),
+      QZ_CONNECT_TIMEOUT_MS,
+      "QZ Tray did not answer",
+    );
+  }
+}
+
+async function sendToQz(tspl) {
+  try {
+    const found = await qz.printers.find();
+    const printers = Array.isArray(found) ? found : [found];
+    const wanted = qzNormalise(QZ_PRINTER_MATCH);
+    const matches = printers.filter((name) => qzNormalise(name).includes(wanted));
+    if (matches.length === 0) {
+      throw new Error(`QZ Tray is running but no printer named like "${QZ_PRINTER_MATCH}" was found. Check that the label printer is plugged in and switched on.`);
+    }
+    // Several queues for the same printer: the PC's default one is the one set up for raw label commands.
+    let printer = matches[0];
+    if (matches.length > 1) {
+      try {
+        const fallback = await qz.printers.getDefault();
+        if (matches.includes(fallback)) printer = fallback;
+      } catch {
+        /* no default printer set: keep the first match */
+      }
+    }
+    // forceRaw (altPrinting before QZ 2.2) stops macOS/Linux printing the commands as text.
+    const config = qz.configs.create(printer, { forceRaw: true, altPrinting: true });
+    await qz.print(config, [{ type: "raw", format: "command", flavor: "plain", data: tspl }]);
+    return (tspl.match(/^\s*PRINT\b/gim) || []).length;
+  } catch (err) {
+    throw new QzPrintError(`Printing through QZ Tray failed: ${err && err.message ? err.message : err}`);
+  }
+}
+
+/** Sends label commands to the printer (QZ Tray first, then the print helper) and resolves with how many labels printed. */
+async function sendToPrinter(tspl) {
+  let qzReason = "";
+  if (Date.now() >= qzDownUntil) {
+    let connected = false;
+    try {
+      await connectQz();
+      connected = true;
+    } catch (err) {
+      qzDownUntil = Date.now() + QZ_RETRY_AFTER_MS; // skip the wait on the next labels while QZ Tray is down
+      qzReason = err && err.message ? err.message : String(err);
+    }
+    if (connected) return sendToQz(tspl);
+  } else {
+    qzReason = "QZ Tray was not reachable a moment ago";
+  }
+  try {
+    return await sendToPrintHelper(tspl);
+  } catch (err) {
+    throw new Error(`QZ Tray is not available (${qzReason}) and the print helper failed: ${err.message}`);
+  }
+}
+
 /** The Print buttons: the one under the scan box and the one on the issue pop-up. `label` null puts the normal text back. */
 function setPrintButtons(label, disabled) {
   const main = $("print-btn");
@@ -1346,7 +1460,7 @@ async function printLabel() {
   try {
     for (const serial of todo) {
       const blob = await api(`/api/issues/${encodeURIComponent(serial)}/label?format=tspl`, { as: "blob" });
-      await sendToPrintHelper(await blob.text());
+      await sendToPrinter(await blob.text());
       state.printed.add(serial);
     }
     setPrintButtons(todo.length > 1 ? `${todo.length} labels sent to the printer` : "Label sent to the printer", true);
@@ -1697,6 +1811,112 @@ function handleScan(code) {
   }
 }
 
+// --- USB serial scanner (Web Serial) ------------------------------------------------------------------
+// A scanner in USB serial (CDC) mode sends no keystrokes, so neither the portal page listener nor the scan boxes
+// above ever see its scans (a Mac drops this scanner's keystrokes in keyboard mode, which is why CDC is used
+// there). The panel reads the port itself and hands each code to handleScan. Press "Connect scanner" once and
+// pick the scanner; Chrome remembers it for this extension. Only one page can hold the port at a time, so a
+// tracker tab that already has it open must be closed (or reloaded after this panel has connected).
+// Not needed on a PC where the scanner types normally (keyboard mode): leave it unconnected there.
+
+const SCANNER_IDLE_FLUSH_MS = 120; // a code with no terminator is complete once nothing more arrives for this long
+const SCANNER_OPEN_RETRIES = 5;
+const scanner = { port: null, reader: null, timer: undefined };
+
+function setScannerStatus(text, connected) {
+  $("scanner-status").textContent = text;
+  $("scanner-connect").hidden = connected;
+}
+
+async function readScanner(port, attempt = 0) {
+  if (scanner.port) return;
+  try {
+    await port.open({ baudRate: 9600 });
+  } catch {
+    // Held by another page (a tracker tab), or just released by a previous session: retry briefly, then say so.
+    if (attempt < SCANNER_OPEN_RETRIES) setTimeout(() => readScanner(port, attempt + 1), 500);
+    else setScannerStatus("Scanner is in use by a tracker page. Go to a page without a scan box (or close that tab), then connect again.", false);
+    return;
+  }
+  if (!port.readable) {
+    await port.close().catch(() => {});
+    return;
+  }
+  scanner.port = port;
+  setScannerStatus("USB scanner connected", true);
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const emit = (raw) => {
+    const code = raw.trim();
+    if (code) handleScan(code);
+  };
+  scanner.reader = port.readable.getReader();
+  try {
+    while (true) {
+      const { value, done } = await scanner.reader.read();
+      if (done) break;
+      clearTimeout(scanner.timer);
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split(/[\r\n]+/);
+      buffer = parts.pop() || "";
+      for (const part of parts) emit(part);
+      if (buffer) {
+        scanner.timer = setTimeout(() => {
+          const pending = buffer;
+          buffer = "";
+          emit(pending);
+        }, SCANNER_IDLE_FLUSH_MS);
+      }
+    }
+  } catch {
+    // The scanner was unplugged or the port closed.
+  } finally {
+    clearTimeout(scanner.timer);
+    scanner.reader.releaseLock();
+    scanner.reader = null;
+    await port.close().catch(() => {});
+    scanner.port = null;
+    setScannerStatus("Scanner disconnected", false);
+  }
+}
+
+// Reconnect to a scanner already allowed for this extension (see scanner.html), now and whenever it is plugged in.
+function reconnectScanner() {
+  if (!navigator.serial) return;
+  navigator.serial
+    .getPorts()
+    .then((ports) => {
+      if (ports[0]) readScanner(ports[0]);
+    })
+    .catch(() => {});
+}
+
+function initScanner() {
+  if (!navigator.serial) return; // the row stays hidden in a browser without Web Serial
+  $("scanner-row").hidden = false;
+  setScannerStatus("", false);
+  // A scanner already allowed for this extension is simply reopened. Only a new one needs the picker, and Chrome
+  // cannot show the device picker inside the side panel, so that one-time step is a normal tab.
+  $("scanner-connect").addEventListener("click", async () => {
+    if (scanner.port) return;
+    try {
+      const ports = await navigator.serial.getPorts();
+      if (ports[0]) {
+        setScannerStatus("Connecting…", false);
+        readScanner(ports[0]);
+        return;
+      }
+    } catch {
+      // Fall through to the one-time pairing tab.
+    }
+    setScannerStatus("Choose the scanner in the tab that just opened.", false);
+    chrome.tabs.create({ url: chrome.runtime.getURL("scanner.html") });
+  });
+  reconnectScanner();
+  navigator.serial.addEventListener("connect", reconnectScanner);
+}
+
 // --- sign in, settings --------------------------------------------------------------------------------
 
 async function login() {
@@ -1932,6 +2152,7 @@ function wire() {
 
   chrome.runtime.onMessage.addListener((msg, sender) => {
     if (!msg || sender.id !== chrome.runtime.id) return;
+    if (msg.type === "scanner-granted") reconnectScanner();
     const fromActiveTab = sender.tab && sender.tab.id === state.tabId;
     if (msg.type === "portal" && fromActiveTab) setPortal(msg.payload);
     if (msg.type === "scan" && fromActiveTab) handleScan(msg.code);
@@ -1946,6 +2167,7 @@ function wire() {
 async function init() {
   await loadState();
   wire();
+  initScanner();
   renderPortal();
   if (state.tokens && state.user) enterMain();
   else showLogin();

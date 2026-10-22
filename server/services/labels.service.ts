@@ -72,10 +72,20 @@ function pickLabels(head: Label, children: Label[], part: "head" | "children" | 
  * a delivery gives just its DV label ("delivery") or just its batch labels ("batches"); a batch gives just its batch or
  * box label ("batch") or just the pack, roll or bottle labels under it ("items"). Leave `only` out for everything.
  */
-export async function loadLabels(target: LabelTarget, conn: DbOrTx = db()): Promise<LabelSet> {
+export async function loadLabels(target: LabelTarget, conn: DbOrTx = db(), pick?: number[]): Promise<LabelSet> {
   const set = await composeLabels(target, conn);
   if (set.labels.length === 0) throw new ValidationError("There are no labels of that kind to print");
-  return set;
+  return pick ? applyPick(set, pick) : set;
+}
+
+/**
+ * Keeps only the labels at the given 1-based positions (as numbered in the preview), in the order given.
+ * Positions that do not exist are ignored; if none are left, that is an error.
+ */
+function applyPick(set: LabelSet, pick: number[]): LabelSet {
+  const labels = pick.filter((n) => n >= 1 && n <= set.labels.length).map((n) => set.labels[n - 1]);
+  if (labels.length === 0) throw new ValidationError("None of the chosen labels exist");
+  return { ...set, labels };
 }
 
 async function composeLabels(target: LabelTarget, conn: DbOrTx): Promise<LabelSet> {
@@ -234,18 +244,18 @@ async function composeLabels(target: LabelTarget, conn: DbOrTx): Promise<LabelSe
   return { labels: pickLabels(boxLabel, bottleLabels, part), name: batch.code };
 }
 
-export async function renderPdf(target: LabelTarget, layout: PdfLayout) {
-  const set = await loadLabels(target);
+export async function renderPdf(target: LabelTarget, layout: PdfLayout, pick?: number[]) {
+  const set = await loadLabels(target, db(), pick);
   return { bytes: await renderLabelsPdf(set.labels, layout), name: set.name };
 }
 
-export async function renderZpl(target: LabelTarget) {
-  const set = await loadLabels(target);
+export async function renderZpl(target: LabelTarget, pick?: number[]) {
+  const set = await loadLabels(target, db(), pick);
   return { zpl: labelsToZpl(set.labels), name: set.name, count: set.labels.length };
 }
 
-export async function renderTspl(target: LabelTarget) {
-  const set = await loadLabels(target);
+export async function renderTspl(target: LabelTarget, pick?: number[]) {
+  const set = await loadLabels(target, db(), pick);
   return { tspl: labelsToTspl(set.labels), name: set.name, count: set.labels.length };
 }
 
@@ -263,16 +273,16 @@ export function isPrinterConfigured(): boolean {
  * Prints the labels. A USB printer (PRINTER_QUEUE) gets TSPL commands through its local queue; otherwise a network
  * Zebra printer (PRINTER_HOST) gets ZPL. Returns how many labels were sent.
  */
-export async function printLabels(target: LabelTarget): Promise<number> {
+export async function printLabels(target: LabelTarget, pick?: number[]): Promise<number> {
   const queue = env().PRINTER_QUEUE;
   if (queue) {
-    const { tspl, count } = await renderTspl(target);
+    const { tspl, count } = await renderTspl(target, pick);
     await sendToQueue(queue, tspl);
     return count;
   }
   const host = env().PRINTER_HOST;
   if (!host) throw new ValidationError("No label printer is set up (PRINTER_QUEUE or PRINTER_HOST). Download the PDF instead.");
-  const { zpl, count } = await renderZpl(target);
+  const { zpl, count } = await renderZpl(target, pick);
   await sendToPrinter(host, zpl);
   return count;
 }

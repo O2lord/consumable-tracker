@@ -16,6 +16,7 @@ import {
   BATCH_SOURCES,
   COLLECTOR_TYPES,
   EVENT_TYPES,
+  EXTERNAL_SYSTEMS,
   IMPORT_KINDS,
   IMPORT_PAYMENT_STATUSES,
   INVESTIGATION_QUEUES,
@@ -24,7 +25,6 @@ import {
   LOCATION_TYPES,
   PATIENT_TYPES,
   PAYMENT_CHECKS,
-  PHARMACY_IMPORT_KINDS,
   POLICY_PATIENT_TYPES,
   REFERENCE_SOURCES,
   REFERENCE_TYPES,
@@ -83,7 +83,7 @@ export const locations = consumables.table("locations", {
   code: text("code").notNull().unique(),
   name: text("name").notNull(),
   type: locationType("type").notNull(),
-  externalSystem: text("external_system", { enum: ["PHARMACY", "LAB_DESTINATION", "WARD"] }),
+  externalSystem: text("external_system", { enum: EXTERNAL_SYSTEMS }),
   externalId: text("external_id"),
   allowUnusedReuse: boolean("allow_unused_reuse").notNull().default(true),
   // What this location does for stock (C2). Null means no restriction.
@@ -127,7 +127,6 @@ export const itemTypes = consumables.table("item_types", {
   containerType: text("container_type"),
   unitOfMeasure: text("unit_of_measure").notNull().default("each"),
   reorderLevel: integer("reorder_level").notNull().default(0),
-  pharmacyCatalogId: text("pharmacy_catalog_id"),
   // Which location service roles this item may be sent to (C2). Null means anywhere.
   allowedServiceRoles: text("allowed_service_roles").array(),
   // Display only: the ledger counts in the stock unit and never converts (C3).
@@ -183,8 +182,6 @@ export const batches = consumables.table(
     supplier: text("supplier"),
     quantity: integer("quantity").notNull(),
     source: batchSource("source").notNull().default("MANUAL"),
-    pharmacyGrnId: text("pharmacy_grn_id"),
-    pharmacyBatchId: text("pharmacy_batch_id"),
     // The delivery this batch arrived in. Null for batches received before deliveries existed.
     deliveryId: uuid("delivery_id").references(() => deliveries.id),
     receivedBy: uuid("received_by")
@@ -208,10 +205,6 @@ export const transfers = consumables.table(
       .notNull()
       .references(() => locations.id),
     status: text("status", { enum: TRANSFER_STATUSES }).notNull().default("DRAFT"),
-    pharmacyTransferId: text("pharmacy_transfer_id"),
-    pharmacyQuantity: integer("pharmacy_quantity"),
-    pharmacySyncStatus: text("pharmacy_sync_status"),
-    quantityMismatchNote: text("quantity_mismatch_note"),
     note: text("note"),
     // The stock request this transfer fills, if any (stock_requests, defined below).
     requestId: uuid("request_id"),
@@ -561,44 +554,6 @@ export const investigationImports = consumables.table(
   ],
 );
 
-// The unique (kind, natural_key) constraint and the expression index on the normalised batch number
-// live in the SQL migration only.
-export const pharmacyImports = consumables.table(
-  "pharmacy_imports",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    kind: text("kind", { enum: PHARMACY_IMPORT_KINDS }).notNull(),
-    naturalKey: text("natural_key").notNull(),
-    pharmacyRef: text("pharmacy_ref"),
-    locationId: uuid("location_id").references(() => locations.id),
-    locationLabel: text("location_label"),
-    destinationLabel: text("destination_label"),
-    genericName: text("generic_name"),
-    strength: text("strength"),
-    brand: text("brand"),
-    itemLabel: text("item_label"),
-    itemKey: text("item_key"),
-    batchNo: text("batch_no"),
-    expiryDate: date("expiry_date"),
-    quantity: integer("quantity").notNull(),
-    unitCost: numeric("unit_cost", { precision: 14, scale: 2 }),
-    unit: text("unit"),
-    category: text("category"),
-    supplier: text("supplier"),
-    transferType: text("transfer_type"),
-    status: text("status"),
-    requestedBy: text("requested_by"),
-    requestedAt: timestamp("requested_at", { withTimezone: true }),
-    lines: integer("lines"),
-    raw: jsonb("raw").notNull().default({}),
-    syncLogId: uuid("sync_log_id").references(() => syncLog.id),
-    importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
-    createdAt,
-    updatedAt,
-  },
-  (t) => [index("pharmacy_imports_location_idx").on(t.locationId, t.kind)],
-);
-
 // --- Phase 7 ---------------------------------------------------------------
 
 // Mirrors 20261007000900_stock_requests_v2.sql. transfers.request_id references this table (foreign
@@ -658,20 +613,6 @@ export const stockRequestLines = consumables.table(
   },
   (t) => [index("stock_request_lines_request_idx").on(t.requestId)],
 );
-
-// --- Phase 7 (reconcile) -----------------------------------------------------
-export const pharmacyReconcileRuns = consumables.table("pharmacy_reconcile_runs", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  triggeredBy: text("triggered_by", { enum: ["JOB", "USER"] }).notNull(),
-  provider: text("provider", { enum: ["manual", "csv", "emr"] }).notNull(),
-  runBy: uuid("run_by").references(() => users.id),
-  summary: jsonb("summary").notNull().default({}),
-  problemsTotal: integer("problems_total").notNull().default(0),
-  inventoryImportedAt: timestamp("inventory_imported_at", { withTimezone: true }),
-  transfersImportedAt: timestamp("transfers_imported_at", { withTimezone: true }),
-  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
-  finishedAt: timestamp("finished_at", { withTimezone: true }),
-});
 
 // --- C7: par levels and stock counts ---------------------------------------------
 // Mirrors 20261011000400_stock_counts.sql.

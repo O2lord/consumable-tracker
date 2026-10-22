@@ -174,20 +174,12 @@ describe.skipIf(!hasDb)("dispatch rules", () => {
     });
   });
 
-  it("refuses to confirm an empty draft, and a Pharmacy mismatch without an explanation", async () => {
+  it("refuses to confirm an empty draft", async () => {
     await inRollback(async (tx) => {
       const f = await fixtures(tx);
-      const { serials } = await stockIn({ itemTypeId: f.bottle.id, locationId: f.store.id, quantity: 2 }, f.keeper.userId, tx);
 
       const empty = await newDraft(tx, f);
       await expect(confirmTransfer(empty.id, f.keeper.userId, { carriedByName: "Test Porter" }, tx)).rejects.toBeInstanceOf(ValidationError);
-
-      const linked = await newDraft(tx, f, { pharmacyTransferId: "PH-1", pharmacyQuantity: 5 });
-      for (const s of serials) await addUnitToTransfer(linked.id, s, tx);
-      await expect(confirmTransfer(linked.id, f.keeper.userId, { carriedByName: "Test Porter" }, tx)).rejects.toThrow(/Explain the difference/);
-
-      const { transfer } = await confirmTransfer(linked.id, f.keeper.userId, { carriedByName: "Test Porter", explanation: "three cracked at the supplier" }, tx);
-      expect(transfer.quantityMismatchNote).toBe("three cracked at the supplier");
     });
   });
 

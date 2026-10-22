@@ -3,7 +3,7 @@
 -- What it clears (everything created by using the app):
 --   events (the ledger), links, units, batches, deliveries, packs (pack labels),
 --   transfers + items + batch parts + item packs, stock requests + lines, stock counts + lines,
---   investigation_imports, pharmacy_imports, pharmacy_reconcile_runs, sync_log.
+--   investigation_imports, sync_log.
 -- What it keeps (setup you entered through the admin screens):
 --   users, roles, locations, item_types, void_reasons, test_catalog, test_standard_items, issue_policies,
 --   par_levels, app_meta.
@@ -14,7 +14,7 @@
 --
 -- Why everything together: units, batches and transfers are tied to the ledger by their events. Clearing the
 -- ledger alone would leave stock that no event explains, and the reconciliation report would show it all as
--- unaccounted. After this, stock starts again from a fresh receive/GRN.
+-- unaccounted. After this, stock starts again from a fresh receive.
 --
 -- Why this is needed at all: the ledger rejects UPDATE, DELETE and TRUNCATE (20261006000200_events_append_only.sql),
 -- and older ISSUED events may still hold an MRN, collector name or override reason in their payload from before
@@ -47,8 +47,6 @@ union all select 'batches', count(*) from consumables.batches
 union all select 'transfers', count(*) from consumables.transfers
 union all select 'stock_requests', count(*) from consumables.stock_requests
 union all select 'investigation_imports', count(*) from consumables.investigation_imports
-union all select 'pharmacy_imports', count(*) from consumables.pharmacy_imports
-union all select 'pharmacy_reconcile_runs', count(*) from consumables.pharmacy_reconcile_runs
 union all select 'deliveries', count(*) from consumables.deliveries
 union all select 'packs', count(*) from consumables.packs
 union all select 'transfer_item_packs', count(*) from consumables.transfer_item_packs
@@ -76,8 +74,6 @@ truncate table
   consumables.stock_request_lines,
   consumables.stock_requests,
   consumables.investigation_imports,
-  consumables.pharmacy_imports,
-  consumables.pharmacy_reconcile_runs,
   consumables.sync_log;
 
 alter table consumables.events enable trigger events_no_truncate;

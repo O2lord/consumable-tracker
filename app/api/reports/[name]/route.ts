@@ -11,14 +11,11 @@ import {
   startOfDay,
 } from "@/server/services/report.service";
 import { listOpenDiscrepancies } from "@/server/services/discrepancy.service";
-import { listStockMismatches, listTransferChecks } from "@/server/services/pharmacy-reconcile.service";
 
 // GET /api/reports/<name> -> a report as JSON (supervisors and auditors).
 //   reconciliation?from=YYYY-MM-DD&to=YYYY-MM-DD&location=<id>   (defaults to the last 30 days)
 //   outstanding?hours=<n>&location=<id>
 //   unverified | overrides | discrepancies | mismatches
-//   pharmacy-stock?location=<id>   tracker stock versus the imported Pharmacy inventory
-//   pharmacy-transfers?all=1       tracker transfer totals versus imported Pharmacy transfers (all=1 includes agreeing ones)
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ name: string }> }) {
   const auth = await guard("view_reports");
@@ -59,10 +56,6 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         return NextResponse.json({ rows: await listOpenDiscrepancies() });
       case "mismatches":
         return NextResponse.json({ rows: await listLedgerMismatches() });
-      case "pharmacy-stock":
-        return NextResponse.json({ rows: await listStockMismatches({ locationId: q.get("location") ?? undefined }) });
-      case "pharmacy-transfers":
-        return NextResponse.json({ rows: await listTransferChecks({ includeOk: q.get("all") === "1" }) });
       default:
         return NextResponse.json({ error: "Unknown report" }, { status: 404 });
     }

@@ -18,6 +18,7 @@ export function PrintButton({
   only,
   label,
   plain = false,
+  fullWidth = false,
   via = "bridge",
 }: {
   batch?: string;
@@ -26,6 +27,8 @@ export function PrintButton({
   label?: string;
   /** Show it as a plain text link instead of a button, for placing next to a title. */
   plain?: boolean;
+  /** Stretch the button to the width of its container. */
+  fullWidth?: boolean;
   via?: "bridge" | "server";
 }) {
   const [state, setState] = useState<{ busy: boolean; error?: string; message?: string }>({ busy: false });
@@ -63,12 +66,16 @@ export function PrintButton({
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-3">
+    <div className={`flex flex-wrap items-center gap-3 ${fullWidth ? "w-full" : ""}`}>
       <button
         type="button"
         onClick={print}
         disabled={state.busy}
-        className={plain ? "text-sm font-semibold text-side-title underline disabled:opacity-60" : buttonClass}
+        className={
+          plain
+            ? "text-sm font-semibold text-side-title underline disabled:opacity-60"
+            : `${buttonClass} ${fullWidth ? "w-full" : ""}`
+        }
       >
         {state.busy ? "Printing..." : (label ?? "Print to label printer")}
       </button>

@@ -281,7 +281,6 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { label: "Stock", href: "/distribution/stock", permission: ["view_location_stock", "count_stock"] },
   { label: "Void", href: "/distribution/void", permission: "void" },
   { label: "Discrepancies", href: "/reports/discrepancies", permission: "view_discrepancies" },
-  { label: "Pharmacy mismatch", href: "/reports/pharmacy", permission: "view_reports" },
   { label: "Outstanding", href: "/reports/outstanding", permission: "view_reports" },
   { label: "Expiring stock", href: "/reports/expiring", permission: "view_reports" },
   { label: "Count variances", href: "/reports/stock-counts", permission: "view_reports" },

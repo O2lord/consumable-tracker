@@ -1,4 +1,4 @@
-import { primaryLinkButtonClass } from "@/components/ui/styles";
+import { linkButtonClass, primaryLinkButtonClass } from "@/components/ui/styles";
 import { PrintButton } from "./[batchCode]/PrintButton";
 
 type Props = (
@@ -9,6 +9,8 @@ type Props = (
   label: string;
   /** One label, shown as a plain text link next to a title. Several labels get the full set of buttons. */
   single?: boolean;
+  /** Stack the actions in a narrow column (a print button over PDF and Preview), for a side panel. */
+  stacked?: boolean;
 };
 
 /**
@@ -19,39 +21,43 @@ type Props = (
  * that is already printed is never printed again just because another one was needed.
  */
 export function LabelButtons(props: Props) {
-  const { label, single = false, only } = props;
+  const { label, single = false, stacked = false, only } = props;
   const target = "batch" in props ? `batch=${encodeURIComponent(props.batch)}` : `delivery=${encodeURIComponent(props.delivery)}`;
   const q = `${target}&only=${only}`;
   const printTarget = "batch" in props ? { batch: props.batch } : { delivery: props.delivery };
 
   if (single) {
-    // Plain text links, not buttons: they sit next to the page title.
+    // A single plain text link, not a button: it sits next to the page title.
+    return <PrintButton {...printTarget} only={only} label={label} plain />;
+  }
+
+  if (stacked) {
     return (
-      <>
-        <a
-          href={`/api/labels?${q}&format=pdf`}
-          target="_blank"
-          rel="noreferrer"
-          className="text-sm font-semibold text-side-title underline"
-        >
-          {label}
-        </a>
-        <a
-          href={`/api/labels?${q}&format=preview`}
-          target="_blank"
-          rel="noreferrer"
-          className="text-sm font-semibold text-side-title underline"
-        >
-          Preview
-        </a>
-        <PrintButton {...printTarget} only={only} label="Print label to printer" plain />
-      </>
+      <div className="flex w-full flex-col gap-2">
+        <div className="grid grid-cols-2 gap-2">
+          <a
+            href={`/api/labels?${q}&format=pdf`}
+            target="_blank"
+            rel="noreferrer"
+            className={`${linkButtonClass} justify-center`}
+          >
+            Open PDF
+          </a>
+          <a
+            href={`/api/labels?${q}&format=preview`}
+            target="_blank"
+            rel="noreferrer"
+            className={`${linkButtonClass} justify-center`}
+          >
+            Preview
+          </a>
+        </div>
+      </div>
     );
   }
 
   return (
     <div className="flex flex-wrap items-center gap-3">
-      <PrintButton {...printTarget} only={only} label="Print labels to printer" />
       <a href={`/api/labels?${q}&format=pdf`} target="_blank" rel="noreferrer" className={primaryLinkButtonClass}>
         Open PDF (one label per page)
       </a>

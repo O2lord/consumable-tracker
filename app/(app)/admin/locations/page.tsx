@@ -133,7 +133,7 @@ function LocationFields({ row }: { row?: LocationRow }) {
         <Select name="externalSystem" options={EXTERNAL_SYSTEMS} defaultValue={row?.externalSystem ?? ""} emptyLabel="None" />
       </Field>
       <div className="sm:col-span-2">
-        <Field label="EMR id (optional)" hint="The matching Pharmacy location, lab destination or ward in the EMR">
+        <Field label="EMR id (optional)" hint="The matching lab destination or ward in the EMR">
           <input name="externalId" defaultValue={row?.externalId ?? ""} className={inputClass} />
         </Field>
       </div>

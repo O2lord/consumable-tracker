@@ -30,11 +30,9 @@ import {
   assertCanDispatchUnit,
   assertServiceRoleAllowed,
   assertStatus,
-  pharmacyMismatchNote,
 } from "../domain/rules";
 import { transition } from "../domain/state-machine";
 import type { TransferStatus } from "../domain/types";
-import { pharmacyProvider } from "../integrations/pharmacy";
 import {
   generateTransferCode,
   isValidBatchCode,
@@ -107,20 +105,6 @@ export async function createTransfer(rawInput: CreateTransferInput, userId: stri
   if (!parsed.success) throw new ValidationError(parsed.error.issues.map((i) => i.message).join("; "));
   const input = parsed.data;
 
-  // The linked Pharmacy transfer's quantity is Pharmacy's, not whatever was typed. It is looked up
-  // before the transaction because the provider reads over its own connection. When Pharmacy does not
-  // know the transfer (nothing imported yet, or manual mode) the typed quantity is used as before.
-  let pharmacyQuantity = input.pharmacyQuantity ?? null;
-  if (input.pharmacyTransferId) {
-    const known = await pharmacyProvider().getTransfer(input.pharmacyTransferId);
-    if (known) pharmacyQuantity = known.quantity;
-    else if (pharmacyQuantity === null) {
-      throw new ValidationError(
-        `Pharmacy transfer ${input.pharmacyTransferId} is not on file. Import the Pharmacy transfers file, or type its quantity`,
-      );
-    }
-  }
-
   return conn.transaction(async (tx) => {
     const [from] = await tx.select().from(locations).where(eq(locations.id, input.fromLocationId));
     if (!from || !from.active) throw new NotFoundError("Sending location");
@@ -138,8 +122,6 @@ export async function createTransfer(rawInput: CreateTransferInput, userId: stri
           fromLocationId: from.id,
           toLocationId: to.id,
           status: "DRAFT",
-          pharmacyTransferId: input.pharmacyTransferId ?? null,
-          pharmacyQuantity,
           note: input.note ?? null,
           createdBy: userId,
         })
@@ -1095,10 +1077,6 @@ export async function confirmTransfer(
       list.push(link.code);
       wholePackCodesByItem.set(link.itemId, list);
     }
-    // The Pharmacy quantity is not counted in loose pieces, so a transfer with piece lines is not compared to it.
-    const mismatchNote =
-      pieceItems.length > 0 ? null : pharmacyMismatchNote(total, transfer.pharmacyQuantity, input.explanation);
-
     // Move the units.
     const step = transition("IN_STOCK", "DISPATCH");
     for (const part of chunks(unitRows.map((u) => u.id))) {
@@ -1190,7 +1168,6 @@ export async function confirmTransfer(
         dispatchedBy: userId,
         dispatchedAt: now,
         carriedByName: input.carriedByName,
-        quantityMismatchNote: mismatchNote,
       })
       .where(eq(transfers.id, transfer.id))
       .returning();
@@ -1410,6 +1387,7 @@ export async function getTransferDetail(ref: string, conn: DbOrTx = db()) {
     toName: locs.get(t.toLocationId) ?? "?",
     createdByName: people.get(t.createdBy) ?? "?",
     dispatchedByName: t.dispatchedBy ? (people.get(t.dispatchedBy) ?? "?") : null,
+    receiptStartedByName: t.receiptStartedBy ? (people.get(t.receiptStartedBy) ?? "?") : null,
     receiptClosedByName: t.receiptClosedBy ? (people.get(t.receiptClosedBy) ?? "?") : null,
     serialItems,
     quantityItems,

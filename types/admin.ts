@@ -47,7 +47,6 @@ export const itemTypeInputSchema = z.object({
     .optional(),
   unitOfMeasure: z.string().trim().min(1).max(30).default("each"),
   reorderLevel: z.coerce.number().int().min(0).max(1_000_000).default(0),
-  pharmacyCatalogId: z.string().trim().max(100).optional(),
   /** Roles this item may be sent to. Empty means anywhere. */
   allowedServiceRoles: z.array(z.enum(SERVICE_ROLES)).default([]),
   /** Display only: changing it never changes a stock count or an event. */

@@ -1,8 +1,8 @@
 # Consumables Barcode Tracker — Architecture
 
-A system for tracking **all hospital consumables** (starting with sample bottles and specimen containers) from the main store to the point of use, and on to the investigation, admission, or procedure they were used for, with full accountability at every step. It layers on top of the EMR's Pharmacy and Lab modules instead of replacing them.
+A system for tracking **all hospital consumables** (starting with sample bottles and specimen containers) from the main store to the point of use, and on to the investigation, admission, or procedure they were used for, with full accountability at every step. It layers on top of the EMR's Lab module instead of replacing it.
 
-> **Status:** design document. The stack in section 3 is an assumption and can be swapped; the data model, tracking modes, state machine, and rules in sections 2 and 4–9 are the part that matters. Section 16 covers the EMR/Pharmacy integration.
+> **Status:** design document. The stack in section 3 is an assumption and can be swapped; the data model, tracking modes, state machine, and rules in sections 2 and 4–9 are the part that matters. Section 16 covers the EMR/Lab integration.
 
 ---
 
@@ -13,7 +13,7 @@ A system for tracking **all hospital consumables** (starting with sample bottles
    - Step 2, at the point of distribution: stock is bound to a **reference** when it is handed out: an investigation (lab), an admission, an outpatient visit, a procedure, a surgery, or a department.
 2. **Answer "where did the others go?"** For any location and period, every unit or quantity is dispatched, received, issued, returned, wasted/voided, or flagged missing. Nothing disappears silently.
 3. **Know exactly *which* item is missing** for serialized items (per-unit scanning at dispatch and receipt), and exactly *how many* for bulk items.
-4. **Layer on the EMR instead of duplicating it.** Pharmacy stays the source for procurement and stock quantity; the tracker adds identity, custody, and usage.
+4. **Layer on the EMR instead of duplicating it.** The tracker adds identity, custody, and usage on top of the EMR's investigations.
 
 ## 2. Core principles
 
@@ -28,8 +28,8 @@ A system for tracking **all hospital consumables** (starting with sample bottles
 - **Append-only event ledger.** Every scan writes an immutable event (who, what, where, when, why). Corrections are new events, never edits.
 - **State machine enforced on the server.** The client can propose a scan; only the server decides whether the transition is legal.
 - **Idempotent, offline-tolerant events.** Each scan carries a client-generated UUID so queued scans can sync safely after a connection drop.
-- **Pharmacy owns quantity and procurement; the tracker owns identity and custody.** Batches, expiry, cost, and quantity-level transfers live in Pharmacy; serials, who-handled-what, and usage links live in the tracker. See section 16.
-- **Integration seams.** Reference lookup (`ReferenceProvider`) and Pharmacy data (`PharmacyProvider`) each sit behind an interface, with manual and CSV implementations now and the EMR API later.
+- **The tracker owns stock, identity and custody.** Batches, expiry, quantities, transfers, serials, who-handled-what, and usage links all live in the tracker.
+- **Integration seam.** Reference lookup (`ReferenceProvider`) sits behind an interface, with manual and CSV implementations now and the EMR API later.
 
 ## 3. Tech stack (assumed)
 
@@ -88,12 +88,12 @@ All tables use `id` (UUID) primary keys and `created_at`/`updated_at` unless not
 | Table | Purpose | Key columns |
 |---|---|---|
 | `users` | Staff accounts | `staff_id` (unique), `name`, `role`, `home_location_id`, `active` (keyed to `auth.users.id`; Supabase Auth holds passwords) |
-| `locations` | Main store, labs, wards, theatres, any holder of stock | `code`, `name`, `type` (`STORE`/`LAB`/`WARD`/`THEATRE`/`OTHER`), `external_system` (`PHARMACY`/`LAB_DESTINATION`/`WARD`/null), `external_id` (the EMR record this maps to), `allow_unused_reuse` (bool, default true), `service_role` (`STORE`/`COLLECTION_POINT`/`BENCH`/`BLOOD_BANK`/null; what the place does for stock, null means unrestricted), `active` |
-| `item_types` | Kinds of consumable | `code`, `name`, `category` (e.g. `SAMPLE_CONTAINER`, `SURGICAL`, `GENERAL`), `tracking_mode` (`SERIAL`/`QUANTITY`), `container_type` (for sample containers, e.g. EDTA, plain, fluoride, formalin), `unit_of_measure`, `reorder_level`, `pharmacy_catalog_id` (nullable link to the Pharmacy catalog item), `allowed_service_roles` (`text[]`, null means it may go anywhere), `pack_size` (integer, default 1; information only, the ledger never converts), `pack_size_confirmed` (bool, false until the lab corrects the placeholder), `cold_storage` (bool, default false; display only: shows a "Keep cold" tag on the item types, stock, transfer and receive screens, blocks nothing) |
-| `batches` | A delivery of one item type | `item_type_id`, `lot_no`, `expiry_date`, `supplier`, `quantity`, `source` (`PHARMACY_GRN`/`MANUAL`), `pharmacy_grn_id`, `pharmacy_batch_id`, `received_by` |
+| `locations` | Main store, labs, wards, theatres, any holder of stock | `code`, `name`, `type` (`STORE`/`LAB`/`WARD`/`THEATRE`/`OTHER`), `external_system` (`LAB_DESTINATION`/`WARD`/null), `external_id` (the EMR record this maps to), `allow_unused_reuse` (bool, default true), `service_role` (`STORE`/`COLLECTION_POINT`/`BENCH`/`BLOOD_BANK`/null; what the place does for stock, null means unrestricted), `active` |
+| `item_types` | Kinds of consumable | `code`, `name`, `category` (e.g. `SAMPLE_CONTAINER`, `SURGICAL`, `GENERAL`), `tracking_mode` (`SERIAL`/`QUANTITY`), `container_type` (for sample containers, e.g. EDTA, plain, fluoride, formalin), `unit_of_measure`, `reorder_level`, `allowed_service_roles` (`text[]`, null means it may go anywhere), `pack_size` (integer, default 1; information only, the ledger never converts), `pack_size_confirmed` (bool, false until the lab corrects the placeholder), `cold_storage` (bool, default false; display only: shows a "Keep cold" tag on the item types, stock, transfer and receive screens, blocks nothing) |
+| `batches` | A delivery of one item type | `item_type_id`, `lot_no`, `expiry_date`, `supplier`, `quantity`, `source` (`MANUAL`), `received_by` |
 | `units` | One row per physical item, **`SERIAL` items only** | `serial` (unique), `item_type_id`, `batch_id`, `state`, `current_location_id`, `current_transfer_id` |
 | `links` | **Many-to-many** link between an item and what it was used for | `unit_id` (null for `QUANTITY`), `batch_id`, `quantity` (1 for serial units), `reference_type` (`INVESTIGATION`/`ADMISSION`/`VISIT`/`PROCEDURE`/`SURGERY`/`DEPARTMENT`), `reference_ref`, `reference_source` (`manual`/`slip_scan`/`csv`/`emr`), `patient_hospital_no`, `patient_type` (`OUTPATIENT`/`INPATIENT`/`WALK_IN`), `payment_check` (`VERIFIED`/`UNVERIFIED`/`NOT_REQUIRED`), `issue_event_id`, `cleared_at` (set when returned unused) |
-| `transfers` | A movement of stock between two locations | `code` (barcoded on the slip), `from_location_id`, `to_location_id`, `status`, `pharmacy_transfer_id` (nullable), `pharmacy_sync_status`, `carried_by_name` (who carried the stock; required at dispatch, write-once), `dispatched_by/at`, `receipt_started_by/at`, `receipt_closed_by/at` |
+| `transfers` | A movement of stock between two locations | `code` (barcoded on the slip), `from_location_id`, `to_location_id`, `status`, `carried_by_name` (who carried the stock; required at dispatch, write-once), `dispatched_by/at`, `receipt_started_by/at`, `receipt_closed_by/at` |
 | `transfer_items` | What is on a transfer | `transfer_id`, `unit_id` (serial items) or `batch_id` (quantity items), `quantity_dispatched`, `quantity_received`, `received_at` (null until scanned or counted), `resolution` (`FOUND`/`WRITTEN_OFF`/null) |
 | `events` | **Append-only ledger of every scan** | `id` (client UUID), `unit_id` (null for quantity events), `batch_id`, `quantity`, `type`, `from_state`, `to_state`, `location_id`, `user_id`, `transfer_id`, `reference_type`, `reference_ref`, `reason_code`, `note`, `payload` (JSON), `occurred_at` (device), `recorded_at` (server), `device_id` |
 | `issue_policies` | Whether payment or a charge is needed before issuing | `reference_type`, `patient_type`, `rule` (`MUST_BE_PAID`/`CHARGE_TO_ADMISSION`/`NONE`) |
@@ -104,7 +104,6 @@ All tables use `id` (UUID) primary keys and `created_at`/`updated_at` unless not
 | `stock_counts` | One periodic count of bulk batches at a location | `location_id`, `status` (`OPEN`/`POSTED`/`CANCELLED`), `counted_by`, `counted_at`, `note`, `posted_by`, `posted_at` |
 | `stock_count_lines` | One counted batch within a count | `count_id`, `batch_id` (unique together), `counted_quantity`, `expected_quantity` (the ledger balance when the count was submitted, refreshed at posting if stock moved), `reason_code`, `note`, `adjustment_event_id` (the `ADJUSTED` event it posted, null when there was no variance) |
 | `investigation_imports` | Rows from the EMR export, **one row per test** | `investigation_ref` (`IXS…`), `patient_hospital_no`, `test_code`, `patient_type`, `payment_status`, `destination`, `status`, `raised_at`, `imported_at` |
-| `pharmacy_imports` | Pharmacy exports used for reconciliation (GRN lines, inventory snapshots, transfers) | `kind`, `pharmacy_ref`, `location`, `item`, `batch`, `quantity`, `imported_at` |
 | `sync_log` | Records of CSV imports and later EMR syncs | `source`, `started_at`, `rows`, `errors` |
 
 **Constraints and triggers**
@@ -124,7 +123,6 @@ All tables use `id` (UUID) primary keys and `created_at`/`updated_at` unless not
 - `v_outstanding_issued`: serialized units still `ISSUED` past the threshold.
 - `v_open_discrepancies`: transfers closed with unscanned units or quantity shortfalls.
 - `v_orphan_issues`: links whose `reference_ref` is missing from `investigation_imports` (or the EMR).
-- `v_pharmacy_mismatch`: tracker quantity versus Pharmacy quantity per location and batch.
 
 ## 6. Project structure
 
@@ -159,7 +157,6 @@ consumables-tracker/
 ├── scripts/
 │   ├── bootstrap-admin.ts             Create the very first ADMIN account (Supabase Auth user + users row); the only seeded record
 │   ├── import-investigations.ts       CLI: load the EMR's nightly investigations CSV into investigation_imports
-│   ├── import-pharmacy.ts             CLI: load Pharmacy GRN, inventory and transfer exports into pharmacy_imports
 │   └── print-test-labels.ts           Generate a sheet of sample labels for scanner/printer testing
 │
 ├── app/                           Routes (UI pages + API handlers)
@@ -171,8 +168,8 @@ consumables-tracker/
 │   │   ├── dashboard/page.tsx     Stock levels, open transfers, discrepancies, outstanding bottles
 │   │   │
 │   │   ├── store/                 STORE_KEEPER screens
-│   │   │   ├── stock-in/page.tsx          Receive a Pharmacy GRN batch (or enter a manual batch), mint serials for SERIAL items, print labels
-│   │   │   ├── dispatch/page.tsx          Create transfer linked to the Pharmacy transfer; scan each unit or enter batch quantity; print transfer slip
+│   │   │   ├── stock-in/page.tsx          Receive a manual batch, mint serials for SERIAL items, print labels
+│   │   │   ├── dispatch/page.tsx          Create transfer; scan each unit or enter batch quantity; print transfer slip
 │   │   │   └── transfers/
 │   │   │       ├── page.tsx               List of transfers and their status
 │   │   │       └── [id]/page.tsx          Transfer detail: serials, receipt status, discrepancies
@@ -194,7 +191,7 @@ consumables-tracker/
 │   │   └── admin/                 ADMIN screens
 │   │       ├── users/page.tsx             Manage staff accounts and roles
 │   │       ├── locations/page.tsx         Stores, labs, wards and theatres, each mapped to its EMR record
-│   │       ├── item-types/page.tsx        Consumable types: category, tracking mode (SERIAL/QUANTITY), reorder levels, Pharmacy catalog link
+│   │       ├── item-types/page.tsx        Consumable types: category, tracking mode (SERIAL/QUANTITY), reorder levels
 │   │       ├── tests/page.tsx             Test catalog: required container type per test
 │   │       ├── policies/page.tsx          Issue policies: payment or charge rule per reference type and patient type
 │   │       ├── void-reasons/page.tsx      Controlled reason list
@@ -202,15 +199,14 @@ consumables-tracker/
 │   │
 │   └── api/                       Route handlers (used by the offline queue and the UI)
 │       ├── events/route.ts                POST batched scan events (idempotent by event id)
-│       ├── batches/route.ts               POST new batch (from a Pharmacy GRN or manual) and generate units
+│       ├── batches/route.ts               POST new batch and generate units
 │       ├── transfers/route.ts             Create/list transfers
 │       ├── transfers/[id]/route.ts        Transfer detail, close receipt, resolve discrepancy
 │       ├── units/[serial]/route.ts        Look up a bottle's current state and history
 │       ├── references/lookup/route.ts     Validate/lookup an investigation, admission, visit, ... via the provider
 │       ├── labels/route.ts                Render label/slip as ZPL or PDF
 │       ├── reports/[name]/route.ts        Report data endpoints
-│       ├── imports/route.ts               Upload and process investigation and Pharmacy CSVs
-│       └── pharmacy/sync/route.ts         Receive or pull GRN, transfer and stock data from Pharmacy
+│       └── imports/route.ts               Upload and process investigation CSVs
 │
 ├── server/
 │   ├── db/
@@ -225,29 +221,23 @@ consumables-tracker/
 │   │   └── types.ts                       Shared domain types and enums
 │   │
 │   ├── services/                          Use-case orchestration: validate, write events, update state in one transaction
-│   │   ├── stock-in.service.ts            Create batch (from a Pharmacy GRN or manual), mint serials for SERIAL items
-│   │   ├── transfer.service.ts            Create transfer linked to a Pharmacy transfer, dispatch units/quantities (bind destination)
+│   │   ├── stock-in.service.ts            Create batch, mint serials for SERIAL items
+│   │   ├── transfer.service.ts            Create transfer, dispatch units/quantities (bind destination)
 │   │   ├── receive.service.ts             Open receipt, per-unit scans (SERIAL) or counted quantities (QUANTITY), close receipt, flag MISSING_IN_TRANSIT or quantity shortfall
 │   │   ├── discrepancy.service.ts         Resolve missing bottles as found or written off
 │   │   ├── issue.service.ts               Check issue policy, link unit/quantity to one or more references, record collector
 │   │   ├── return.service.ts              Handle the three return outcomes: used → RETURNED, unused → IN_STOCK (clears investigation link, honours allow_unused_reuse), unusable → delegates to void.service
 │   │   ├── void.service.ts                Void with reason
 │   │   ├── reconciliation.service.ts      Build reconciliation and outstanding reports
-│   │   ├── pharmacy-reconcile.service.ts  Compare tracker quantities with Pharmacy inventory and transfers; flag mismatches
 │   │   ├── labels.service.ts              Compose label and slip content
-│   │   └── import.service.ts              Parse and load investigation and Pharmacy CSVs
+│   │   └── import.service.ts              Parse and load investigation CSVs
 │   │
 │   ├── integrations/
-│   │   ├── reference/                     Resolves what an item is issued against
-│   │   │   ├── provider.ts                ReferenceProvider interface: lookup(type, ref) → { exists, patientNo, patientType, paymentStatus, items[], destination }
-│   │   │   ├── manual.provider.ts         Format validation only (current default)
-│   │   │   ├── csv.provider.ts            Validates against investigation_imports
-│   │   │   └── emr.provider.ts            Future EMR API: investigations, admissions, visits, procedures, surgeries
-│   │   └── pharmacy/                      Source of GRNs, batches, transfers and stock balances
-│   │       ├── provider.ts                PharmacyProvider interface: listGrns(), getBatch(), getTransfer(), getBalances()
-│   │       ├── manual.provider.ts         No Pharmacy link: batches and transfers are entered in the tracker (source = MANUAL)
-│   │       ├── csv.provider.ts            Imports Pharmacy exports (GRN, inventory, transfers)
-│   │       └── emr.provider.ts            Future EMR API for Pharmacy
+│   │   └── reference/                     Resolves what an item is issued against
+│   │       ├── provider.ts                ReferenceProvider interface: lookup(type, ref) → { exists, patientNo, patientType, paymentStatus, items[], destination }
+│   │       ├── manual.provider.ts         Format validation only (current default)
+│   │       ├── csv.provider.ts            Validates against investigation_imports
+│   │       └── emr.provider.ts            Future EMR API: investigations, admissions, visits, procedures, surgeries
 │   │
 │   ├── auth/
 │   │   ├── session.ts                     Session handling
@@ -289,18 +279,17 @@ consumables-tracker/
 ## 7. Key flows
 
 ### 7.1 Stock in (store)
-1. A supplier delivery is received in Pharmacy as a **GRN**. Once the GRN is verified or distributed there, the tracker picks it up (API, or CSV import in the early phase) and creates the `batch` (`source = PHARMACY_GRN`). If the item isn't in Pharmacy yet, the store keeper enters the batch manually (`source = MANUAL`).
+1. A supplier delivery is received by the store keeper, who enters the batch in the tracker (`source = MANUAL`).
 2. For `SERIAL` item types, `stock-in.service` creates N `units` (`IN_STOCK`, location = the store) with serials from `lib/serial.ts`, and the labels print. For `QUANTITY` item types it records the batch quantity, with a batch/box label.
 3. A `STOCKED` event is written per unit (or per batch for quantity items).
 
 ### 7.2 Dispatch, step 1 of the CMD's encoding (store)
-1. The store keeper creates a transfer: Main Store → EPU Side Lab (or any destination), linked to the matching Pharmacy transfer when one exists.
+1. The store keeper creates a transfer: Main Store → EPU Side Lab (or any destination).
 2. `SERIAL` items: they scan each unit. Each scan validates `state = IN_STOCK` at the store and not expired, then adds the unit to `transfer_items`. `QUANTITY` items: they scan the batch/box and enter the quantity. When a scanned box has a sibling batch of the same item that expires sooner and still has stock at the sending location, an amber note suggests sending that one first. It never blocks (a batch with no expiry counts as last; expired batches are ignored, since dispatch already refuses them; bottles scanned without a box get no suggestion).
    - **Who can send:** a location may dispatch if its type is `STORE` (Main lab reception is seeded as a `STORE`, so stock can pass main store → reception → ward or bench).
    - **Where an item may go:** at confirm, each item's `allowed_service_roles` is checked against the destination's `service_role`. A destination with the role `STORE` is always allowed, so the restriction is enforced at the next hop. Example refusal: "Anti-A can't be sent to MMW. It can go to: BENCH, BLOOD_BANK".
-3. The tracker checks that the scanned total matches the linked Pharmacy transfer quantity. A mismatch must be explained before the transfer can be confirmed.
-4. The store keeper types the name of the person carrying the stock (**required**; the last few names are offered as suggestions). It applies to transfers made from requests as well.
-5. On confirm, units go `IN_TRANSIT` (quantities are recorded as `DISPATCHED`), `carried_by_name` is stored in the same update, and the **transfer slip** prints with its own barcode (`TRF-…`), the expected quantity and the carrier's name. The name also shows on the transfer detail page and under the heading of the receive screen, so the receiver sees who brought the stock. On the discrepancy report it appears with the other people details (the dispatch trail on open transfers and a "Carried by" column in the history), visible only to roles with `view_discrepancy_people`.
+3. The store keeper types the name of the person carrying the stock (**required**; the last few names are offered as suggestions). It applies to transfers made from requests as well.
+4. On confirm, units go `IN_TRANSIT` (quantities are recorded as `DISPATCHED`), `carried_by_name` is stored in the same update, and the **transfer slip** prints with its own barcode (`TRF-…`), the expected quantity and the carrier's name. The name also shows on the transfer detail page and under the heading of the receive screen, so the receiver sees who brought the stock. On the discrepancy report it appears with the other people details (the dispatch trail on open transfers and a "Carried by" column in the history), visible only to roles with `view_discrepancy_people`.
 
 ### 7.3 Receive (point of distribution), per-unit scanning
 1. The attendant scans the transfer slip. The system opens a receipt and shows "0 of 50 scanned".
@@ -312,7 +301,6 @@ consumables-tracker/
    - Everything accounted for → transfer `RECEIVED`.
    - Some units unscanned → those serials become `MISSING_IN_TRANSIT`, the transfer becomes `RECEIVED_WITH_DISCREPANCY`, and the store keeper and supervisor are notified **with the exact serials**. For quantity items a shortfall is recorded the same way, by batch.
 4. A supervisor later resolves each missing unit or quantity as **found** (back in stock at the destination) or **written off**.
-5. The linked Pharmacy transfer should only be accepted for the quantity actually received. Until the integration is live, any difference is reported in `v_pharmacy_mismatch`.
 
 ### 7.4 Issue, step 2 of the CMD's encoding (point of use)
 **Lab (investigations).** Investigations are per test (IXS181 for an LFT, IXS180 for an FBS), so one tube can serve several of a patient's tests.
@@ -374,7 +362,6 @@ A location's target and minimum per item are set on `/admin/par-levels` (one for
 - One serialized unit may be linked to several investigations of the **same patient**; linking one unit to different patients is blocked.
 - Terminal states (`RETURNED`, `VOIDED`, `WRITTEN_OFF`) cannot transition further.
 - A unit returned unused goes back to `IN_STOCK` only at the location it was issued from, and only if that location allows reuse; its links are cleared, but the earlier events are never altered.
-- A transfer linked to a Pharmacy transfer cannot be confirmed with a different total quantity without a recorded explanation.
 - Every state change writes exactly one event, in the same DB transaction.
 - Supervisor overrides require a reason and are flagged in reports.
 
@@ -445,12 +432,11 @@ Every event stores `user_id` (the EMR staff ID), so the reconciliation report ca
 3. **Outstanding:** issued but not returned (used, unused or voided) past the threshold.
 4. **Orphan issues:** links whose reference isn't in the EMR export.
 5. **Unverified issues:** links recorded with `payment_check = UNVERIFIED`, for review until payment lookup is live.
-6. **Pharmacy mismatch:** tracker quantity versus Pharmacy inventory per location and batch.
-7. **Bottle history:** the full event trail for one serial.
-8. **Usage by reference:** which items and quantities were used per investigation, admission, procedure or department.
-9. **Stock and reorder:** on hand per location against `reorder_level`.
-10. **Expiring stock** (`/reports/expiring`): shelf stock per location and batch, soonest expiry first, over 30, 60 or 90 days. It also lists stock already expired but still on the shelf so it can be removed. Bottles already issued to a patient are left out.
-11. **Count variances** (`/reports/stock-counts`): posted counts in a period (default the last 90 days), filtered by location. The table lists the lines that differed, with counted, expected, difference, reason and who counted; the totals above it cover all counted lines (lines counted, lines that differed, units short, units over). Needs `view_reports`.
+6. **Bottle history:** the full event trail for one serial.
+7. **Usage by reference:** which items and quantities were used per investigation, admission, procedure or department.
+8. **Stock and reorder:** on hand per location against `reorder_level`.
+9. **Expiring stock** (`/reports/expiring`): shelf stock per location and batch, soonest expiry first, over 30, 60 or 90 days. It also lists stock already expired but still on the shelf so it can be removed. Bottles already issued to a patient are left out.
+10. **Count variances** (`/reports/stock-counts`): posted counts in a period (default the last 90 days), filtered by location. The table lists the lines that differed, with counted, expected, difference, reason and who counted; the totals above it cover all counted lines (lines counted, lines that differed, units short, units over). Needs `view_reports`.
 
 ## 14. Build order
 
@@ -461,22 +447,21 @@ Every event stores `user_id` (the EMR staff ID), so the reconciliation report ca
 | M3 | Issue against references with issue policies and many-to-many links; return (used / unused / unusable); void | Full store → patient trail |
 | M4 | Reconciliation, outstanding, bottle-history reports | What the CMD actually wants to see |
 | M5 | Offline queue and sync | Reliable in poor connectivity |
-| M6 | CSV cross-checks: investigations (orphans, MRN-first issue screen) and Pharmacy exports (quantity mismatch) | Catches typos, phantom investigations, and stock drift |
-| M7 | Pharmacy layering via API: GRN → batch, linked transfers, daily reconcile | One stock truth between Pharmacy and the tracker |
+| M6 | CSV cross-checks: investigations (orphans, MRN-first issue screen) | Catches typos and phantom investigations |
+| M7 | Removed (2026-10-21): the Pharmacy layering was dropped | |
 | M8 | EMR reference provider: live investigation, admission and payment lookup | Native lookup, verified payment checks, optional charge write-back |
 
 Pilot with sample bottles (`SERIAL`) at one side lab (EPU) after M4, then extend to other consumables.
 
-**Change to M6 (2026-10-07):** investigations reach the tracker through the Chrome extension (section 17) instead of CSV uploads, so the investigation upload was removed; the Pharmacy CSV imports remain.
+**Change to M6 (2026-10-07):** investigations reach the tracker through the Chrome extension (section 17) instead of CSV uploads, so the investigation upload was removed.
 
 ## 15. Open questions
 
-- **Are sample bottles and other consumables already in Pharmacy Catalogs and Inventory?** This decides whether batches come from GRNs or are entered manually at first (checklist in section 16.4).
 - Does the EMR's request slip already carry a barcode or QR?
 - How are inpatient consumables billed today (Charges tab, Default Lab Consumables)? The tracker must not double-bill, and its usage links could later feed those charges.
 - Formats of admission, visit, procedure and surgery numbers (for `reference-formats.ts`).
 - Which item types are `SERIAL` and which are `QUANTITY` on day one? Proposed: sample bottles and specimen containers `SERIAL`, everything else `QUANTITY`.
-- Which of the EMR's Pharmacy locations and Lab Destinations map to the tracker's locations (including the EPU side lab)?
+- Which of the EMR's Lab Destinations map to the tracker's locations (including the EPU side lab)?
 - Hospital policy on reusing bottles that left the lab unused: if not allowed, set `allow_unused_reuse` to false for those locations.
 - Overdue threshold for outstanding bottles (default 24 h).
 - Which label printer and scanner models will actually be used?
@@ -492,54 +477,37 @@ Pilot with sample bottles (`SERIAL`) at one side lab (EPU) after M4, then extend
   - Parked: should the tracker accept the manufacturer's barcode on blood bags; should it do more than the display-only "Keep cold" tag it now shows for anti-sera and AHG (temperatures, alerts), and which kits and strips need it; and are formalin or histology containers, blood culture bottles and culture media supplied separately and to be tracked? Expected consumption per test is no longer parked: the lab defines a standard list per test (section 7.4, "Issue for a test") and confirms the quantities; whether the EMR's Default Lab Consumables setting should also be compared is still open.
 
 
-## 16. EMR integration: layering on Pharmacy and Lab
+## 16. EMR integration: layering on the Lab
 
 ### 16.1 Who owns what
 
 | System | Owns |
 |---|---|
-| **Pharmacy** | Catalog items (including consumables), suppliers, GRNs, batches with expiry and cost, quantity inventory per location, quantity-level transfers (Accept/Decline) |
 | **Lab Tests / Inpatient / Outpatient** | Investigations (one per test), payment status, specimens, admissions, charges and invoices |
 | **Tracker** | Item identity (serials), custody trail (who handled what, where, when), links from items to references, discrepancy detection |
 
-Pharmacy answers "how many, and what is it worth". The tracker answers "which one, who had it, and what was it used for".
+The tracker answers "which one, who had it, and what was it used for".
 
 ### 16.2 How the layers connect
-1. **GRN → batch.** A verified or distributed GRN creates the tracker batch; serials are minted for `SERIAL` item types.
-2. **Transfer ↔ transfer.** Each tracker transfer references its Pharmacy transfer (`pharmacy_transfer_id`). The scanned dispatch total must equal the Pharmacy quantity, and the Pharmacy side should be accepted only for the quantity the tracker's receipt confirmed.
-3. **Daily reconcile.** `pharmacy-reconcile.service` compares tracker quantity with Pharmacy inventory per location and batch and writes the differences to `v_pharmacy_mismatch`.
-4. **Usage → references.** Links point at the EMR's investigation, admission, or procedure; later they can feed the existing charge and consumable-billing mechanisms.
+1. **Usage → references.** Links point at the EMR's investigation, admission, or procedure; later they can feed the existing charge and consumable-billing mechanisms.
 
 ### 16.3 What the EMR needs to expose
-1. **Pharmacy:** list GRNs with lines and batches; the Locations list; Inventory balances per location and batch; Transfers with status and quantities; ideally a webhook or poll for "GRN distributed" and "transfer accepted".
-2. **Lab:** investigations by MRN and by number, with status, payment status, patient type, tests, destination, and cancellations.
-3. **Inpatient and Outpatient:** admission and visit lookup by number or MRN, so non-lab issues can be linked.
-4. **Departments and Destinations:** wards and lab destinations, for mapping `locations.external_id`.
-5. **Staff identity:** SSO or shared staff IDs.
-6. **Optional write-back:** show on the investigation which bottle was used, and push consumable charges to an admission.
+1. **Lab:** investigations by MRN and by number, with status, payment status, patient type, tests, destination, and cancellations.
+2. **Inpatient and Outpatient:** admission and visit lookup by number or MRN, so non-lab issues can be linked.
+3. **Departments and Destinations:** wards and lab destinations, for mapping `locations.external_id`.
+4. **Staff identity:** SSO or shared staff IDs.
+5. **Optional write-back:** show on the investigation which bottle was used, and push consumable charges to an admission.
 
-### 16.4 First check: are consumables in Pharmacy today?
-In the staff portal (staging first):
-1. **Pharmacy > Catalogs:** search for sample bottles, EDTA tubes, specimen containers, syringes. If they exist, note the catalog names.
-2. **Pharmacy > Inventory:** check whether those items have batches with quantities and expiry at a store location.
-3. **Management > Settings > Billing > Default Lab Consumables:** note which services are added per billed test. These show what the EMR already bills and may not be physical stock at all.
-
-| Result | Plan |
-|---|---|
-| Items exist with batches | Layer as designed in 16.2 |
-| Items missing or only billed as services | Run with manual batches (`source = MANUAL`) and ask Beta Care to add the items to the Pharmacy catalog before the pilot, so GRN-driven batches can follow |
-
-### 16.5 Rollout
-1. **Prepare mappings:** locations to Pharmacy Locations and Lab Destinations, staff IDs, item types to Pharmacy catalog items.
-2. **Shadow mode:** run the Pharmacy and Reference providers alongside manual or CSV data and log mismatches without blocking anyone.
-3. **Turn on Pharmacy-linked transfers and reconcile**, then payment and reference lookup.
+### 16.4 Rollout
+1. **Prepare mappings:** locations to Lab Destinations, staff IDs.
+2. **Shadow mode:** run the Reference provider alongside manual or CSV data and log mismatches without blocking anyone.
+3. **Turn on payment and reference lookup.**
 4. **Add SSO and sync** of locations and the test catalog.
 5. **Link the UIs:** an "Issue bottle" action on the investigation page that opens the tracker already on that patient.
 6. **Backfill:** a one-time check of historical links against the EMR, then retire the CSV imports.
 
-### 16.6 When the two systems disagree
+### 16.5 When the two systems disagree
 - For *which* units exist and where they are, the tracker's scans win.
-- For *how many* and *what they cost*, Pharmacy wins.
 - Any difference is flagged and resolved by a supervisor with a reason; neither system is silently corrected to match the other.
 
 Two things to do now to keep this easy: put the tracker's tables in their own Postgres schema (e.g. `consumables`) so they can move into the EMR's database later, and store only the reference and the patient's MRN, fetching anything else live so patient data stays in the EMR.
@@ -563,7 +531,11 @@ The portal is a Flutter web app that paints onto a canvas, so there is no page t
 **Fields kept in the page:** investigation id and number, MRN, test name, payment status, status, destination, invoice number, admission id (used only to find other tests of the same admission that can share a bottle), whether an outpatient id is present, and the progress timestamps and names of the staff who started, prepared and verified. The patient's name, phone, date of birth, clinical summary, diagnosis, specimen and anything that looks like a result are dropped inside the page and never leave it.
 
 ### 17.3 The panel
-- **Issue:** shows the open investigation; the attendant scans a bottle. Tests of the same patient that can share it (same container type, and same invoice for outpatients and walk-ins or same admission for inpatients) are offered with it, so one scan links them all. A supervisor can override a container mismatch (or an unpaid investigation, where a policy blocks it) with a reason. The issue label can be printed.
+- **Issue:** shows the open investigation; the attendant scans a bottle. Tests of the same patient that can share it (same container type, and same invoice for outpatients and walk-ins or same admission for inpatients) are offered with it, so one scan links them all. A supervisor can override a container mismatch (or an unpaid investigation, where a policy blocks it) with a reason. The issue label can be printed (see "Issue from stock" and "Printing" below).
+- **Issue from stock and print:** a second way to issue, for when the attendant has no bottle in hand to scan. The panel sends the request with no serial and `fromStock: true`. The server picks a bottle from stock at the user's working location: only `IN_STOCK` bottles whose container type every test in the group accepts, expired batches skipped, earliest expiry first (no expiry last), at most five candidates looked up. `issueUnit` then runs all the usual checks (container, payment policy, patient, location, expiry) on the first candidate. If someone else issued that bottle between the lookup and the issue, the next candidate is tried; if all are gone the user is asked to try again. If nothing suitable is in stock, or the tests in one group need different containers, the request is refused with a plain message and nothing is issued. The scan path is unchanged and is the fallback when stock is empty.
+- **Several bottles for one patient:** when the same patient has other pending tests that need a different container, the panel lists them under "These need a different bottle". The ticked tests are split into a plan of groups: tests that can share a bottle (same container, same invoice or admission) form one group and get one bottle, and each other group gets its own. Scanning issues the next bottle in the plan, one scan at a time. **Issue from stock** issues every bottle in the plan in one go (one `/api/ext/issue` call per group, in order). If a later group fails (for example nothing in stock), the bottles already issued stay issued, the error is shown with a button to print their labels, and the remaining groups can still be scanned.
+- **Items used with the bottle:** the bulk items for the open test (swabs and so on, pre-filled from the test's standard items and editable in the panel) are sent with the open investigation's bottle only, and are issued in the same database transaction as that bottle, so a shortage of swabs leaves no bottle issued. They are never repeated for the other bottles of the plan.
+- **Printing:** each issued bottle's label is fetched from the tracker (`/api/issues/[serial]/label?format=tspl`) and sent to the label print helper on the same PC (`scripts/print_bridge.py`, a localhost WebSocket on port 8767). The helper only accepts the tracker's address and the extension's ID, and only passes on plain label commands. After an issue from stock the labels print straight away; after a scanned issue the attendant presses Print. With several bottles the labels go through the helper one after the other, and a reprint prints them all again.
 - **Return:** the same three outcomes as 7.5 (used, unused and intact, unusable).
 - **Look up:** scan any bottle to see what it was issued for, or see which bottles an investigation has.
 - **Sync:** every investigation the portal loads is recorded in `investigation_imports` the first time it is seen (`raw.source = portal`, queue `LAB`), and its status, invoice and progress are kept current. A sync failure never blocks issuing or returning.
@@ -577,7 +549,9 @@ Bearer-token authenticated and permission-checked like the web app; `/api/ext/is
 | `sync` | Record or update investigations read from the portal (batches of up to 50) |
 | `test-match` | Which item types fit a test (container match) |
 | `investigation-bottles` | Bottles already linked to an investigation |
-| `issue`, `return` | Issue a bottle to the open investigation (and sharing tests); return it |
+| `issue`, `return` | Issue a bottle to the open investigation (and sharing tests); return it. `issue` takes either a `serial` (scanned) or `fromStock: true` (the server chooses the bottle); it is refused with "Scan the bottle" when neither is given |
+| `active-refs` | Investigation numbers that have a bottle linked right now |
+| `bulk-items` | Bulk items that can be added to the "items used" list in the panel |
 | `unit/[serial]`, `bottle/[serial]` | Bottle state for the Issue/Return and Look up tabs |
 | `void-reasons` | Reason list for unusable returns |
 
@@ -591,9 +565,14 @@ Bearer-token authenticated and permission-checked like the web app; `/api/ext/is
 ### 17.6 Deployment
 - Needs a Chrome version with side panel support.
 - Install through a managed Chrome policy, not as an unpacked extension.
+- Until a managed install exists, each lab PC loads the `extension` folder unpacked, from one fixed folder that is a git clone (a sparse checkout of `extension/` is enough). Updating is a pull, then the refresh icon on the extension's card in `chrome://extensions`. An unpacked extension's ID comes from its folder path, so loading it from a new folder changes the ID, and the print helper then refuses the extension until its `--extension-id` is updated once.
+- **Print helper:** each lab PC that prints labels also runs `scripts/print_bridge.py`, started at sign-in by a startup shortcut (the installer creates it; on a PC where the installer is blocked it is made by hand with `pythonw.exe`, the helper path, `--printer`, `--origin` and `--extension-id`). The setup steps and troubleshooting are in `scripts/print-helper/README.md`.
+- **Server and extension are deployed separately.** A change to the app (for example the `fromStock` field on `/api/ext/issue`) reaches the lab only when the app is redeployed. An old server answers a newer extension with validation errors such as "expected string, received undefined"; the cure is to redeploy the server, not to reload the extension.
 - The scripts currently run on `https://*.betacare.com.ng/*` (staging and production). Narrow this to the real hosts. When the system moves to the hospital LAN, update the host matches, make the tracker's certificate trusted on every lab PC, and pre-grant the tracker host permission by policy so attendants see no prompts.
 
 ### 17.7 Known limits
 - It depends on the portal's undocumented API field names, so a portal update can break the reader. A diagnostic view shows the shapes of calls seen, without values. Ask Beta Care for a stable read endpoint or advance notice of changes.
 - It only sees investigations the browser has loaded.
 - Scanner input is recognised by its serial shape outside text fields; if the serial format changes, the recogniser must change with it.
+- Issue from stock chooses by expiry only; it does not know which bottle is physically at the top of the shelf, so the label printed is the one for the bottle the server chose. If the attendant takes a different bottle, they should scan it instead.
+- Printing needs the helper running on the same PC. If the helper is stopped, the issue still succeeds and the labels can be printed again later from the panel once the helper is running.

@@ -141,7 +141,7 @@ export default async function TransferPage({ params }: { params: Promise<{ code:
         ) : null}
       </div>
 
-      {!draft || detail.parts.length > 0 || t.note || detail.requestCode || t.pharmacyTransferId ? (
+      {!draft || detail.parts.length > 0 || t.note || detail.requestCode ? (
         <section className={`${panelClass} flex flex-col gap-4`}>
           {!draft ? (
             <div className="flex flex-wrap gap-x-8 gap-y-3">
@@ -150,8 +150,13 @@ export default async function TransferPage({ params }: { params: Promise<{ code:
                 <Fact label="Dispatched">{t.dispatchedAt.toLocaleString("en-GB")}</Fact>
               ) : null}
               {t.dispatchedAt ? <Fact label="Carried by">{t.carriedByName ?? "Not recorded"}</Fact> : null}
+              {detail.receiptStartedByName ? (
+                <Fact label="Received by">{detail.receiptStartedByName}</Fact>
+              ) : null}
               {detail.receiptClosedByName && t.receiptClosedAt ? (
-                <Fact label="Receipt closed">{t.receiptClosedAt.toLocaleString("en-GB")}</Fact>
+                <Fact label="Receipt closed">
+                  {t.receiptClosedAt.toLocaleString("en-GB")} by {detail.receiptClosedByName}
+                </Fact>
               ) : null}
               {detail.requestCode ? (
                 <Fact label="For request">
@@ -171,12 +176,6 @@ export default async function TransferPage({ params }: { params: Promise<{ code:
           ) : null}
 
           {t.note ? <p className="text-sm">Note: {t.note}</p> : null}
-          {t.pharmacyTransferId ? (
-            <p className="text-sm">
-              Pharmacy transfer {t.pharmacyTransferId}, quantity {t.pharmacyQuantity}.
-              {t.quantityMismatchNote ? ` Difference explained: ${t.quantityMismatchNote}` : ""}
-            </p>
-          ) : null}
           {detail.parts.length > 0 ? (
             <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
               <span>Batch parts on this transfer:</span>
@@ -336,7 +335,6 @@ export default async function TransferPage({ params }: { params: Promise<{ code:
           code={t.code}
           total={totals.all}
           pieceTotal={totals.pieceTotal}
-          pharmacyQuantity={t.pharmacyQuantity}
           recentCarriers={recentCarriers}
         />
       ) : null}

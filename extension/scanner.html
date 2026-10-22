@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Connect scanner</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+    <style>
+      body { max-width: 420px; margin: 48px auto; padding: 0 16px; }
+    </style>
+  </head>
+  <body>
+    <h1>Connect the scanner</h1>
+    <p class="muted">
+      The scanner must be in USB serial (CDC) mode. Click the button, choose the scanner (it appears as
+      DECODER-CDC), then click Connect. You only need to do this once on this computer.
+    </p>
+    <button id="pick" class="primary">Choose scanner</button>
+    <div id="msg" class="banner" hidden></div>
+    <script src="scanner.js"></script>
+  </body>
+</html>
