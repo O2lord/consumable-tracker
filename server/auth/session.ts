@@ -20,8 +20,27 @@ import { ADMIN_PERMISSIONS, can, canWorkAtAnyLocation, registerRole, type Permis
 
 const ACCESS_COOKIE = "ct-access";
 
-/** How long to wait for Supabase Auth before giving up, so an outage fails fast instead of hanging. */
-const AUTH_TIMEOUT_MS = 15000;
+/**
+ * How long to wait for each Supabase Auth attempt, and how many attempts to make. A connection that stalls while
+ * opening is abandoned early and retried on a fresh one, which rides out a flaky network far better than waiting
+ * out one long attempt. A real outage still fails after about AUTH_ATTEMPTS * AUTH_ATTEMPT_TIMEOUT_MS.
+ */
+const AUTH_ATTEMPT_TIMEOUT_MS = 6000;
+const AUTH_ATTEMPTS = 3;
+
+/** fetch with a per-attempt timeout and retries on network errors (not on HTTP error responses). */
+async function fetchAuth(input: string, init: Omit<RequestInit, "signal">): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= AUTH_ATTEMPTS; attempt++) {
+    try {
+      return await fetch(input, { ...init, signal: AbortSignal.timeout(AUTH_ATTEMPT_TIMEOUT_MS) });
+    } catch (err) {
+      lastErr = err;
+      if (attempt < AUTH_ATTEMPTS) console.warn(`[auth] attempt ${attempt}/${AUTH_ATTEMPTS} failed, retrying`);
+    }
+  }
+  throw lastErr;
+}
 
 /**
  * The user only ever sees a generic message, so log the real reason (ECONNREFUSED, ENOTFOUND, ETIMEDOUT,
@@ -94,12 +113,11 @@ export async function signIn(staffIdInput: string, password: string): Promise<Si
   let res: Response;
   const startedAt = Date.now();
   try {
-    res = await fetch(`${url}/auth/v1/token?grant_type=password`, {
+    res = await fetchAuth(`${url}/auth/v1/token?grant_type=password`, {
       method: "POST",
       headers: { "Content-Type": "application/json", apikey },
       body: JSON.stringify({ email, password }),
       cache: "no-store",
-      signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
     });
     console.info(`[auth] signIn: Supabase responded ${res.status} in ${Date.now() - startedAt}ms`);
   } catch (err) {
@@ -196,10 +214,9 @@ export const getSession = cache(async (): Promise<Session | null> => {
   const { url, apikey } = authConfig();
   let res: Response;
   try {
-    res = await fetch(`${url}/auth/v1/user`, {
+    res = await fetchAuth(`${url}/auth/v1/user`, {
       headers: { apikey, Authorization: `Bearer ${token}` },
       cache: "no-store",
-      signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
     });
   } catch (err) {
     // Network down, DNS failure or timeout: we could not check, which is not the same as signed out.
