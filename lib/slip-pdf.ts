@@ -114,26 +114,26 @@ export async function renderSlipPdf(slip: SlipData): Promise<Uint8Array> {
 }
 
 /**
- * Just the transfer barcode and its code, on a 50 x 25 mm label (the same size as the bottle and box labels),
- * with nothing else on it. By default the label sits in the middle of an A4 sheet, because it is printed on the
- * office laser printer: a bare 50 x 25 mm page would land in the top-left corner of the paper. Pass
- * `sheet: "label"` for a 50 x 25 mm page when printing on the label printer.
+ * Just the transfer barcode and its code, on a 50 x 22 mm label (the same size as the bottle and box labels in
+ * lib/tspl.ts and lib/label-pdf.ts), with nothing else on it. By default the page is exactly one label, for the
+ * label printer (Xprinter XP-365B, stock set to 50 x 22 mm). Pass `sheet: "a4"` to centre the label on an A4 sheet
+ * instead, for the office laser printer: a bare 50 x 22 mm page would land in the top-left corner of the paper.
  */
 export async function renderTransferLabelPdf(code: string, options: { sheet?: "a4" | "label" } = {}): Promise<Uint8Array> {
   const width = 50 * MM;
-  const height = 25 * MM;
+  const height = 22 * MM;
   const pad = 2.5 * MM;
   const pdf = await PDFDocument.create();
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-  const onA4 = (options.sheet ?? "a4") === "a4";
+  const onA4 = options.sheet === "a4";
   const page = onA4 ? pdf.addPage([210 * MM, 297 * MM]) : pdf.addPage([width, height]);
   // Where the label's bottom-left corner sits on the page: the middle of the sheet, or the page corner.
   const ox = onA4 ? (page.getWidth() - width) / 2 : 0;
   const oy = onA4 ? (page.getHeight() - height) / 2 : 0;
 
   const image = await pdf.embedPng(await code128Png(code));
-  const scale = Math.min((width - 2 * pad) / image.width, (13 * MM) / image.height);
+  const scale = Math.min((width - 2 * pad) / image.width, (11 * MM) / image.height);
   const w = image.width * scale;
   const h = image.height * scale;
   page.drawImage(image, { x: ox + (width - w) / 2, y: oy + height - pad - h, width: w, height: h });

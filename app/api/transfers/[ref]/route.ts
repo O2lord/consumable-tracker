@@ -6,7 +6,8 @@ import { renderSlipPdf, renderTransferLabelPdf } from "@/lib/slip-pdf";
 
 // GET /api/transfers/<code or id>              -> the transfer with its items (JSON)
 // GET /api/transfers/<code or id>?format=pdf   -> the transfer slip (only once dispatched)
-// GET /api/transfers/<code or id>?format=label -> just the barcode (PDF), to print and stick on the box
+// GET /api/transfers/<code or id>?format=label -> just the barcode (PDF), 50 x 22 mm, to print and stick on the box
+//                                                  (add &sheet=a4 to get it centred on an A4 sheet instead)
 //
 // A distributor can only open transfers headed to their own location, and while a receipt is
 // still open they do not get the dispatched quantity of bulk items (counts stay blind).
@@ -32,7 +33,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       if (transfer.status === "DRAFT" || transfer.status === "CANCELLED") {
         return NextResponse.json({ error: "The barcode is available once the transfer is dispatched" }, { status: 409 });
       }
-      const bytes = await renderTransferLabelPdf(transfer.code);
+      const sheet = request.nextUrl.searchParams.get("sheet") === "a4" ? "a4" : "label";
+      const bytes = await renderTransferLabelPdf(transfer.code, { sheet });
       return new Response(bytes as unknown as BodyInit, {
         headers: {
           "Content-Type": "application/pdf",
