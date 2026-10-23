@@ -104,11 +104,11 @@
           <input id="issue-scan" class="scan" autocomplete="off" spellcheck="false" placeholder="Scan or type the serial, then Enter" />
         </label>
 
-        <button id="stock-btn" type="button" class="primary" title="Takes a bottle from stock at your location and prints its label">Issue from stock and print</button>
-        <p class="muted small">No bottle to scan? This picks the in-date bottle that expires first, issues it and prints its label.</p>
+        <button id="stock-btn" type="button" class="primary" title="Takes a bottle from stock at your location and opens its label">Issue from stock and open label</button>
+        <p class="muted small">No bottle to scan? This picks the in-date bottle that expires first, issues it and opens its label.</p>
 
         <div id="issue-msg" class="banner" hidden></div>
-        <button id="print-btn" hidden>Print issue label</button>
+        <button id="print-btn" hidden>Open issue label</button>
       </div>
 
       <!-- Return -->
@@ -168,13 +168,12 @@
       <div id="result-box" class="busy-box result-box">
         <div id="result-icon" class="result-icon" aria-hidden="true"></div>
         <div id="result-text" class="busy-text result-text"></div>
-        <!-- Only for an issued bottle: prints its label from the pop-up, so there is no scrolling to the button below -->
-        <button id="result-print" type="button" class="primary" hidden>Print label</button>
+        <!-- Only for an issued bottle: opens its label PDF from the pop-up, so there is no scrolling to the button below -->
+        <button id="result-print" type="button" class="primary" hidden>Open label</button>
         <button id="result-ok" type="button" class="primary">OK</button>
       </div>
     </div>
 
-    <script src="qz-tray.js"></script>
-<script src="sidepanel.js"></script>
+    <script src="sidepanel.js"></script>
   </body>
 </html>

@@ -9,7 +9,7 @@ import { isValidBatchCode, normalizeCode, parseDeliveryCode, parsePackCode, pars
 import { labelsToZpl } from "../../lib/zpl";
 import { labelsToTspl } from "../../lib/tspl";
 import { renderTsplPreviewHtml } from "../../lib/tspl-preview";
-import { renderLabelsPdf, type PdfLayout } from "../../lib/label-pdf";
+import { renderLabelsPdf, type PdfLayout, type PdfOptions } from "../../lib/label-pdf";
 import { sendToPrinter, sendToQueue } from "../../lib/printer";
 import type { Label } from "../../lib/label-types";
 
@@ -244,9 +244,9 @@ async function composeLabels(target: LabelTarget, conn: DbOrTx): Promise<LabelSe
   return { labels: pickLabels(boxLabel, bottleLabels, part), name: batch.code };
 }
 
-export async function renderPdf(target: LabelTarget, layout: PdfLayout, pick?: number[]) {
+export async function renderPdf(target: LabelTarget, layout: PdfLayout, pick?: number[], options?: PdfOptions) {
   const set = await loadLabels(target, db(), pick);
-  return { bytes: await renderLabelsPdf(set.labels, layout), name: set.name };
+  return { bytes: await renderLabelsPdf(set.labels, layout, options), name: set.name };
 }
 
 export async function renderZpl(target: LabelTarget, pick?: number[]) {

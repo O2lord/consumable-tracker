@@ -1,14 +1,16 @@
 import { Suspense } from "react";
 import { connection } from "next/server";
 import { getSession, requireSession, ServiceUnavailableError } from "@/server/auth/session";
-import { navFor } from "@/server/auth/permissions";
+import { canWorkAtAnyLocation, navFor } from "@/server/auth/permissions";
+import { listLocations } from "@/server/services/catalog.service";
 import { SyncStatus } from "@/components/offline/SyncStatus";
 import { OfflineNotice } from "@/components/offline/OfflineNotice";
 import { SidebarBrand, SidebarFrame, SidebarNav, SidebarToggle, type SidebarGroup } from "@/components/nav/SidebarNav";
 import { UserMenu } from "@/components/nav/UserMenu";
+import { WorkLocationSwitcher } from "@/components/nav/WorkLocationSwitcher";
 import { PageLoading } from "@/components/ui/PageLoading";
 import { ToastProvider } from "@/components/ui/Toast";
-import { logoutAction } from "./actions";
+import { logoutAction, setWorkLocationAction } from "./actions";
 
 // Everything under (app) needs a signed-in, active user. Pages check their own permission with
 // requirePermission(); this layout decides which links to show.
@@ -98,10 +100,21 @@ async function TopBar() {
   const session = await getSessionOrNull();
   if (!session) return <div className="flex-1" />;
 
+  // Where the person is working, set once here for every page. Supervisors and admins choose it; everyone else sees
+  // their own location, read-only. The name is looked up among all locations so a deactivated home still shows.
+  const all = await listLocations();
+
   return (
     <>
       <SyncStatus userId={session.userId} />
       <div className="flex-1" />
+      <WorkLocationSwitcher
+        locations={all.filter((l) => l.active).map((l) => ({ id: l.id, name: l.name }))}
+        value={session.workLocationId}
+        currentName={all.find((l) => l.id === session.workLocationId)?.name ?? null}
+        canChoose={canWorkAtAnyLocation(session.role)}
+        setLocationAction={setWorkLocationAction}
+      />
       <UserMenu name={session.name} roleName={session.roleName} logoutAction={logoutAction} />
     </>
   );

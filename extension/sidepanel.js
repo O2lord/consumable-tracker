@@ -24,7 +24,7 @@ const state = {
   busy: false,
   forceOverride: false,
   issued: [], // serials issued for the open investigation (and its group) since it was opened, for the Print buttons
-  printed: new Set(), // those of them whose label has been sent to the printer
+  printed: new Set(), // those of them whose label PDF has been opened
   other: new Set(), // investigation numbers ticked that need a different bottle, issued in the same go
   doneRefs: new Set(), // investigation numbers already issued from this panel, so they are not offered again
   unit: null,
@@ -95,7 +95,7 @@ function showResult(kind, text, opts) {
   const print = $("result-print");
   print.hidden = !withPrint;
   if (withPrint) {
-    print.dataset.idle = (opts && opts.printText) || (kind === "ok" ? "Print label" : "Try printing again");
+    print.dataset.idle = (opts && opts.printText) || (kind === "ok" ? "Open label" : "Try opening again");
     print.textContent = print.dataset.idle;
     print.disabled = false;
   }
@@ -749,7 +749,7 @@ function renderGate() {
   $("issue-scan").disabled = gate.blocked;
   $("stock-btn").disabled = gate.blocked;
   // With more than one bottle to issue, the scan box says which one is next and the stock button issues them all.
-  $("stock-btn").textContent = plan.length > 1 ? `Issue all ${plan.length} bottles from stock and print` : "Issue from stock and print";
+  $("stock-btn").textContent = plan.length > 1 ? `Issue all ${plan.length} bottles from stock and open labels` : "Issue from stock and open label";
   $("issue-scan").placeholder = gate.blocked
     ? "Waiting for a valid investigation…"
     : plan.length > 1
@@ -1230,7 +1230,7 @@ async function doIssue(serial, opts = {}) {
       const left = failedGroup.members.map((m) => m.investigationRef).join(", ");
       banner("issue-msg", "error", `Issued ${summary}.${tail} Could not issue the bottle for ${left}: ${failure.message}`, {
         print: true,
-        printText: issuedNow.length > 1 ? "Print the issued labels" : "Print the issued label",
+        printText: issuedNow.length > 1 ? "Open the issued labels" : "Open the issued label",
       });
       if (failure instanceof ApiError && failure.status === 409 && state.user && state.user.can && state.user.can.override) {
         state.forceOverride = true;
@@ -1238,7 +1238,7 @@ async function doIssue(serial, opts = {}) {
     } else {
       banner("issue-msg", "ok", `Issued ${summary}.${tail}`, {
         print: true,
-        printText: issuedNow.length > 1 ? `Print ${issuedNow.length} labels` : undefined,
+        printText: issuedNow.length > 1 ? `Open ${issuedNow.length} labels` : undefined,
       });
       beep(true);
       state.forceOverride = false;
@@ -1248,8 +1248,8 @@ async function doIssue(serial, opts = {}) {
     $("issue-scan").value = "";
     $("override-reason").value = "";
     renderGate();
-    // From stock the labels print straight away: the person never had a bottle in hand to scan first. If one bottle
-    // could not be issued the error stays on screen, with a button to print what was issued.
+    // From stock the label PDFs open straight away: the person never had a bottle in hand to scan first. If one bottle
+    // could not be issued the error stays on screen, with a button to open what was issued.
     if (fromStock && !failure) printLabel();
   } catch (err) {
     beep(false);
@@ -1277,171 +1277,23 @@ function hideBusy() {
   $("busy-overlay").hidden = true;
 }
 
-// The print helper (scripts/print_bridge.py) runs on the computer the label printer is plugged into.
-const PRINT_HELPER_URL = "ws://localhost:8767";
-
-/** Sends label commands to the print helper and resolves with how many labels it printed. */
-function sendToPrintHelper(tspl) {
-  const down =
-    "The print helper is not running on this computer. Ask whoever manages this PC to run the print helper installer. " +
-    `If it is installed already, it must be set up to allow this extension (extension ID: ${chrome.runtime.id}).`;
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let socket = null;
-    const timer = setTimeout(() => finish(new Error("The print helper did not answer. Check the printer and try again.")), 15000);
-    function finish(err, labels = 0) {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try {
-        if (socket) socket.close();
-      } catch {
-        /* already closed */
-      }
-      if (err) reject(err);
-      else resolve(labels);
-    }
-    try {
-      socket = new WebSocket(PRINT_HELPER_URL);
-    } catch {
-      finish(new Error(down));
-      return;
-    }
-    socket.onopen = () => socket.send(JSON.stringify({ type: "print", tspl }));
-    socket.onerror = () => finish(new Error(down));
-    socket.onclose = () => finish(new Error(down));
-    socket.onmessage = (event) => {
-      try {
-        const reply = JSON.parse(String(event.data));
-        if (reply.type === "printed") finish(undefined, reply.labels || 0);
-        else finish(new Error(reply.message || "Printing failed"));
-      } catch {
-        finish(new Error("The print helper gave an answer that could not be read"));
-      }
-    };
-  });
-}
-
-// --- QZ Tray ---------------------------------------------------------------------------------------
-// QZ Tray (https://qz.io) is tried first, then the print helper above, and the helper only when QZ Tray cannot be
-// reached (so a label never prints twice). The library file qz-tray.js must sit next to this file: an extension
-// cannot load it from the internet (see scripts/qz/README.md). Without the file the helper is used, as before.
-// Keep the printer name and rules in step with lib/print-bridge.ts.
-const QZ_PRINTER_MATCH = "Xprinter_XP_365B";
-const QZ_CONNECT_TIMEOUT_MS = 60_000; // long enough for a person to click Allow on QZ Tray's popup
-const QZ_RETRY_AFTER_MS = 30_000;
-let qzDownUntil = 0;
-let qzSigningConfigured = false;
-
-/** QZ Tray is reachable but the print failed: shown as is, never retried on the helper. */
-class QzPrintError extends Error {}
-
-function qzNormalise(name) {
-  return String(name).toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-function qzWithTimeout(promise, ms, message) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(message)), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
-}
-
-/** Signs the requests with the tracker's certificate so QZ Tray can remember "Allow". Anonymous when the server has none. */
-function setupQzSigning() {
-  if (qzSigningConfigured) return;
-  qzSigningConfigured = true;
-  qz.security.setSignatureAlgorithm("SHA512");
-  qz.security.setCertificatePromise((resolve, reject) => {
-    api("/api/qz/certificate", { as: "blob" })
-      .then((blob) => blob.text())
-      .then(resolve, reject);
-  });
-  qz.security.setSignaturePromise((toSign) => (resolve, reject) => {
-    api("/api/qz/sign", { method: "POST", body: { request: toSign }, as: "blob" })
-      .then((blob) => blob.text())
-      .then(resolve, reject);
-  });
-}
-
-async function connectQz() {
-  if (typeof qz === "undefined") throw new Error("qz-tray.js is not in the extension folder");
-  setupQzSigning();
-  if (!qz.websocket.isActive()) {
-    await qzWithTimeout(
-      qz.websocket.connect({ retries: 0, delay: 0, usingSecure: true }),
-      QZ_CONNECT_TIMEOUT_MS,
-      "QZ Tray did not answer",
-    );
-  }
-}
-
-async function sendToQz(tspl) {
-  try {
-    const found = await qz.printers.find();
-    const printers = Array.isArray(found) ? found : [found];
-    const wanted = qzNormalise(QZ_PRINTER_MATCH);
-    const matches = printers.filter((name) => qzNormalise(name).includes(wanted));
-    if (matches.length === 0) {
-      throw new Error(`QZ Tray is running but no printer named like "${QZ_PRINTER_MATCH}" was found. Check that the label printer is plugged in and switched on.`);
-    }
-    // Several queues for the same printer: the PC's default one is the one set up for raw label commands.
-    let printer = matches[0];
-    if (matches.length > 1) {
-      try {
-        const fallback = await qz.printers.getDefault();
-        if (matches.includes(fallback)) printer = fallback;
-      } catch {
-        /* no default printer set: keep the first match */
-      }
-    }
-    // forceRaw (altPrinting before QZ 2.2) stops macOS/Linux printing the commands as text.
-    const config = qz.configs.create(printer, { forceRaw: true, altPrinting: true });
-    await qz.print(config, [{ type: "raw", format: "command", flavor: "plain", data: tspl }]);
-    return (tspl.match(/^\s*PRINT\b/gim) || []).length;
-  } catch (err) {
-    throw new QzPrintError(`Printing through QZ Tray failed: ${err && err.message ? err.message : err}`);
-  }
-}
-
-/** Sends label commands to the printer (QZ Tray first, then the print helper) and resolves with how many labels printed. */
-async function sendToPrinter(tspl) {
-  let qzReason = "";
-  if (Date.now() >= qzDownUntil) {
-    let connected = false;
-    try {
-      await connectQz();
-      connected = true;
-    } catch (err) {
-      qzDownUntil = Date.now() + QZ_RETRY_AFTER_MS; // skip the wait on the next labels while QZ Tray is down
-      qzReason = err && err.message ? err.message : String(err);
-    }
-    if (connected) return sendToQz(tspl);
-  } else {
-    qzReason = "QZ Tray was not reachable a moment ago";
-  }
-  try {
-    return await sendToPrintHelper(tspl);
-  } catch (err) {
-    throw new Error(`QZ Tray is not available (${qzReason}) and the print helper failed: ${err.message}`);
-  }
+/**
+ * Opens a label PDF in a new tab. Staff look at the label there and print it with the system dialogue (Cmd+Option+P on
+ * Mac, Ctrl+Shift+P on Windows), the same as the Open PDF buttons in the web app. Nothing is installed on the PC.
+ * The PDF is fetched here with the panel's own sign-in, because a new tab to the tracker would not have it.
+ */
+function openPdf(blob) {
+  const url = URL.createObjectURL(blob);
+  chrome.tabs.create({ url });
+  setTimeout(() => URL.revokeObjectURL(url), 10 * 60_000);
 }
 
 /** The Print buttons: the one under the scan box and the one on the issue pop-up. `label` null puts the normal text back. */
 function setPrintButtons(label, disabled) {
   const main = $("print-btn");
   const popup = $("result-print");
-  main.textContent = label || "Print issue label";
-  popup.textContent = label || popup.dataset.idle || "Print label";
+  main.textContent = label || "Open issue label";
+  popup.textContent = label || popup.dataset.idle || "Open label";
   main.disabled = disabled;
   popup.disabled = disabled;
 }
@@ -1455,15 +1307,15 @@ async function printLabel() {
   // The labels not yet printed; when all were printed already, print them all again (a reprint).
   const fresh = state.issued.filter((s) => !state.printed.has(s));
   const todo = fresh.length ? fresh : [...state.issued];
-  setPrintButtons("Printing…", true);
+  setPrintButtons("Opening…", true);
   clearTimeout(resultTimer);
   try {
     for (const serial of todo) {
-      const blob = await api(`/api/issues/${encodeURIComponent(serial)}/label?format=tspl`, { as: "blob" });
-      await sendToPrinter(await blob.text());
+      const blob = await api(`/api/issues/${encodeURIComponent(serial)}/label`, { as: "blob" });
+      openPdf(blob);
       state.printed.add(serial);
     }
-    setPrintButtons(todo.length > 1 ? `${todo.length} labels sent to the printer` : "Label sent to the printer", true);
+    setPrintButtons(todo.length > 1 ? `${todo.length} labels opened` : "Label opened", true);
     const seq = resultSeq;
     setTimeout(() => {
       setPrintButtons(null, false);
@@ -1476,7 +1328,7 @@ async function printLabel() {
   } catch (err) {
     setPrintButtons(null, false);
     // The pop-up shows the error and keeps a Print button, so it can be tried again without scrolling.
-    banner("issue-msg", "error", `Could not print the label: ${err.message}`, { print: true });
+    banner("issue-msg", "error", `Could not open the label: ${err.message}`, { print: true });
   }
 }
 

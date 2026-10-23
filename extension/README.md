@@ -1,5 +1,21 @@
 # Scanner setup
 
+## Installing the extension on a PC
+
+1. In Chrome or Edge open `chrome://extensions` (or `edge://extensions`) and switch on **Developer mode**.
+2. Click **Load unpacked** and choose the `extension` folder (a git clone of the repo). Keep it in one fixed place
+   (for example `C:\ConsumablesExtension`): the extension's ID depends on the folder, and moving it breaks things.
+3. Open the extension's side panel, go to Settings, enter the tracker's address, choose **Save and test**, allow
+   Chrome's permission prompt and sign in. The extension only acts on the staff portal pages (`*.betacare.com.ng`).
+4. To update: pull the changes, then click the refresh icon on the extension's card in `chrome://extensions`.
+
+Labels are not printed by the extension. **Open label** opens the label PDF in a new tab; check it and print it with the
+system print window, as in `docs/label-printing-setup.md`. Nothing is installed on the PC besides the printer's driver.
+
+---
+
+## Barcode scanner
+
 How to get the barcode scanner working with the Consumables Tracker extension (side panel) and the tracker web app.
 
 The scanner is a LICON LP1010. It has two USB modes, and which one to use depends on the computer:

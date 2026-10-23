@@ -18,6 +18,12 @@ export function normalizeMrn(input: string): string {
   return input.trim().toUpperCase().replace(/\s+/g, "");
 }
 
+/** A bare number gets the hospital prefix ("1278932" becomes "UATH/PT/1278932"); anything else is left as typed. */
+export function withMrnPrefix(input: string): string {
+  const value = input.trim();
+  return /^\d+$/.test(value) ? `UATH/PT/${value}` : value;
+}
+
 export function isValidMrn(mrn: string): boolean {
   return MRN.test(normalizeMrn(mrn));
 }

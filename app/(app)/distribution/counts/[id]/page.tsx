@@ -39,7 +39,7 @@ export default async function StockCountDetailPage({ params }: { params: Promise
     <div className="flex flex-col gap-6">
       <div>
         <p className="text-sm">
-          <Link href={`/distribution/stock?tab=count&location=${encodeURIComponent(count.locationId)}`} className="underline">
+          <Link href={`/distribution/stock?tab=count`} className="underline">
             Stock counts
           </Link>
         </p>

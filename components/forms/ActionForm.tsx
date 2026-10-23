@@ -1,12 +1,22 @@
 "use client";
 
-import { startTransition, useActionState, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, startTransition, useActionState, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { FormState } from "./form-state";
 import { buttonClass, compactDangerButtonClass, dangerButtonClass, ghostButtonClass } from "../ui/styles";
 import { Modal } from "../ui/Modal";
 import { useToast } from "../ui/Toast";
 import { useFormDialog } from "./FormDialog";
+
+const SubmitSlotContext = createContext<ReactNode>(null);
+
+/**
+ * Where the form's submit button (with its extra actions and its error or status line) goes, when the form was given
+ * `submitSlot`. Place it anywhere inside the form, for example in a row of other buttons.
+ */
+export function SubmitSlot() {
+  return <>{useContext(SubmitSlotContext)}</>;
+}
 
 interface Props {
   action: (prev: FormState, formData: FormData) => Promise<FormState>;
@@ -35,6 +45,10 @@ interface Props {
   topBarClassName?: string;
   /** Extra buttons shown in the same row as the submit button (for example a Cancel next to Post). */
   extraActions?: ReactNode;
+  /** Leave the submit button out of the form's own bars: the form places it with <SubmitSlot /> instead. */
+  submitSlot?: boolean;
+  /** A loading screen over the page while the action runs, with this text beside the spinner. */
+  busyText?: ReactNode;
 }
 
 /**
@@ -56,6 +70,8 @@ export function ActionForm({
   topBar,
   topBarClassName,
   extraActions,
+  submitSlot = false,
+  busyText,
 }: Props) {
   const [state, formAction, pending] = useActionState(action, {} as FormState);
   const formRef = useRef<HTMLFormElement>(null);
@@ -124,7 +140,7 @@ export function ActionForm({
           startTransition(() => formAction(data));
         }}
       >
-        {topBar !== undefined ? (
+        {!submitSlot && topBar !== undefined ? (
           <div className={topBarClassName ?? "sticky top-0 z-20 flex flex-wrap items-center justify-between gap-3 bg-page py-2"}>
             <div className="min-w-0 text-sm text-zinc-500">{topBar}</div>
             <div className="flex flex-wrap items-center justify-end gap-3">
@@ -134,8 +150,28 @@ export function ActionForm({
             </div>
           </div>
         ) : null}
-        {children}
-        {topBar === undefined ? (
+        <SubmitSlotContext.Provider
+          value={
+            submitSlot ? (
+              <>
+                {submitButton}
+                {extraActions}
+                {feedback}
+              </>
+            ) : null
+          }
+        >
+          {children}
+        </SubmitSlotContext.Provider>
+        {pending && busyText ? (
+          <div role="status" className="fixed inset-0 z-[300] flex items-center justify-center bg-black/40">
+            <div className="flex items-center gap-3 rounded-xl border border-line bg-surface px-5 py-4 text-sm shadow-lg">
+              <span aria-hidden className="h-5 w-5 animate-spin rounded-full border-2 border-line border-t-brand" />
+              <span>{busyText}</span>
+            </div>
+          </div>
+        ) : null}
+        {!submitSlot && topBar === undefined ? (
           <div className="flex flex-wrap items-center gap-3">
             {submitButton}
             {extraActions}

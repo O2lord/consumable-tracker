@@ -104,15 +104,13 @@ export async function cancelCountAction(_prev: FormState, formData: FormData): P
   const session = await requirePermission("count_stock");
   const raw = formDataToObject(formData);
   const countId = String(raw.countId ?? "");
-  let locationId: string;
   try {
-    const cancelled = await cancelCount(countId, session);
-    locationId = cancelled.locationId;
+    await cancelCount(countId, session);
   } catch (err) {
     return toFormError(err);
   }
   revalidatePath(PATH);
   revalidatePath(STOCK_PATH);
-  // Back to the Stock page's count tab, at the same location.
-  redirect(`${STOCK_PATH}?tab=count&location=${encodeURIComponent(locationId)}`);
+  // Back to the Stock page's count tab (it shows the location the person is working at).
+  redirect(`${STOCK_PATH}?tab=count`);
 }

@@ -3,12 +3,10 @@ import { apiFailure, guard } from "@/server/auth/api-guard";
 import { worksAtOwnLocationOnly } from "@/server/auth/permissions";
 import { getTransferDetail } from "@/server/services/transfer.service";
 import { renderSlipPdf, renderTransferLabelPdf } from "@/lib/slip-pdf";
-import { transferLabelToTspl } from "@/lib/tspl";
 
 // GET /api/transfers/<code or id>              -> the transfer with its items (JSON)
 // GET /api/transfers/<code or id>?format=pdf   -> the transfer slip (only once dispatched)
-// GET /api/transfers/<code or id>?format=label -> just the barcode, to print and stick on the box
-// GET /api/transfers/<code or id>?format=tspl  -> the same barcode as printer commands, for the print helper
+// GET /api/transfers/<code or id>?format=label -> just the barcode (PDF), to print and stick on the box
 //
 // A distributor can only open transfers headed to their own location, and while a receipt is
 // still open they do not get the dispatched quantity of bulk items (counts stay blind).
@@ -30,18 +28,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     }
 
     const format = request.nextUrl.searchParams.get("format");
-    if (format === "label" || format === "tspl") {
+    if (format === "label") {
       if (transfer.status === "DRAFT" || transfer.status === "CANCELLED") {
         return NextResponse.json({ error: "The barcode is available once the transfer is dispatched" }, { status: 409 });
-      }
-      if (format === "tspl") {
-        return new Response(transferLabelToTspl(transfer.code), {
-          headers: {
-            "Content-Type": "text/plain; charset=utf-8",
-            "Content-Disposition": `attachment; filename="barcode-${transfer.code}.tspl"`,
-            "Cache-Control": "no-store",
-          },
-        });
       }
       const bytes = await renderTransferLabelPdf(transfer.code);
       return new Response(bytes as unknown as BodyInit, {

@@ -13,22 +13,8 @@ interface Props {
   /** The page title and intro, shown on the left with the two buttons on the right. */
   header: ReactNode;
   reasons: { code: string; label: string }[];
-  locations?: { id: string; name: string }[];
-  defaultLocationId?: string;
-}
-
-function LocationField({ locations, defaultLocationId }: Pick<Props, "locations" | "defaultLocationId">) {
-  if (!locations) return null;
-  return (
-    <Field label="Working at">
-      <Select
-        name="locationId"
-        required
-        defaultValue={defaultLocationId}
-        options={locations.map((l) => ({ value: l.id, label: l.name }))}
-      />
-    </Field>
-  );
+  /** Where the person is working (the app bar). Sent so the server refuses a form left open across a switch. */
+  workLocationId: string;
 }
 
 function ReasonField({ reasons }: { reasons: Props["reasons"] }) {
@@ -44,7 +30,7 @@ function ReasonField({ reasons }: { reasons: Props["reasons"] }) {
   );
 }
 
-export function VoidForms({ header, reasons, locations, defaultLocationId }: Props) {
+export function VoidForms({ header, reasons, workLocationId }: Props) {
   return (
     <FormDialogGroup
       header={header}
@@ -54,7 +40,7 @@ export function VoidForms({ header, reasons, locations, defaultLocationId }: Pro
           title: "Void a bottle",
           content: (
             <ActionForm action={voidUnitAction} submitLabel="Void bottle" danger confirm="Void this bottle? This cannot be undone.">
-              <LocationField locations={locations} defaultLocationId={defaultLocationId} />
+              <input type="hidden" name="locationId" value={workLocationId} />
               <ScanField name="serial" label="Scan the bottle" autoFocus />
               <ReasonField reasons={reasons} />
               <Field label="Note (optional)">
@@ -68,7 +54,7 @@ export function VoidForms({ header, reasons, locations, defaultLocationId }: Pro
           title: "Write off bulk items",
           content: (
             <ActionForm action={voidQuantityAction} submitLabel="Write off" danger confirm="Write off this quantity? This cannot be undone.">
-              <LocationField locations={locations} defaultLocationId={defaultLocationId} />
+              <input type="hidden" name="locationId" value={workLocationId} />
               <div className="grid gap-3 sm:grid-cols-2">
                 <Field label="Batch code (from the box label)">
                   <input name="batch" required autoFocus autoComplete="off" className={`${inputClass} font-mono`} />

@@ -1,6 +1,6 @@
 import { requirePermission } from "@/server/auth/session";
 import { canWorkAtAnyLocation } from "@/server/auth/permissions";
-import { listActiveItemTypes, listActiveLocations } from "@/server/services/catalog.service";
+import { listActiveItemTypes } from "@/server/services/catalog.service";
 import { MAX_BACKDATE_DAYS, listBenchAvailability, listLabUsagePage } from "@/server/services/lab-usage.service";
 import { tableClass, tdClass, thClass } from "@/components/ui/styles";
 import { Pagination } from "@/components/ui/Pagination";
@@ -16,21 +16,22 @@ const isoDay = (d: Date) => d.toISOString().slice(0, 10);
 export default async function UsedPage({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
   const session = await requirePermission("record_usage");
   const sp = await searchParams;
-  const isSupervisor = canWorkAtAnyLocation(session.role);
+  // Where the person is working: set in the app bar (a supervisor's choice, or everyone else's home location).
+  const workLocationId = session.workLocationId;
 
-  if (!isSupervisor && !session.homeLocationId) {
+  if (!workLocationId) {
     return (
       <p className="max-w-xl rounded-xl border border-line bg-surface p-4 text-sm">
-        Your account has no home location, so you cannot record usage. Ask an admin to set one.
+        {canWorkAtAnyLocation(session.role)
+          ? "Choose where you are working, at the top of the page, to record usage."
+          : "Your account has no home location, so you cannot record usage. Ask an admin to set one."}
       </p>
     );
   }
 
-  const [locations, itemTypes, recentPage, availability] = await Promise.all([
-    isSupervisor ? listActiveLocations() : Promise.resolve(undefined),
+  const [itemTypes, recentPage, availability] = await Promise.all([
     listActiveItemTypes(),
-    // Supervisors and admins see entries from everywhere (with a Where column); everyone else sees their own location.
-    listLabUsagePage(isSupervisor ? undefined : (session.homeLocationId as string), parsePage(sp.page)),
+    listLabUsagePage(workLocationId, parsePage(sp.page)),
     // What is on the shelf now, per item and location, so the form can show it as soon as an item is picked.
     listBenchAvailability(),
   ]);
@@ -56,6 +57,8 @@ export default async function UsedPage({ searchParams }: { searchParams: Promise
   return (
     <div className="flex flex-col gap-6">
       <FormDialog
+        // A new working location starts the pop-up over, so it never records at the old place.
+        key={workLocationId}
         buttonLabel="Record usage"
         header={
           <div className="max-w-2xl">
@@ -69,8 +72,7 @@ export default async function UsedPage({ searchParams }: { searchParams: Promise
         intro="At the end of the day, record what the lab used at the bench, for example 1 pack of cotton wool, 10 AHG. There is no patient and nothing to scan. It comes off the shelf, and stock counts then show whether the shelf matches."
       >
         <UsedForm
-          locations={locations?.map((l) => ({ id: l.id, name: l.name }))}
-          defaultLocationId={session.homeLocationId ?? undefined}
+          workLocationId={workLocationId}
           benchItems={benchItems}
           availability={availability}
           today={isoDay(now)}
@@ -79,7 +81,7 @@ export default async function UsedPage({ searchParams }: { searchParams: Promise
       </FormDialog>
 
       <section className="overflow-x-auto rounded-xl border border-line bg-surface px-2 py-1">
-        <h2 className="mb-2 font-medium">{isSupervisor ? "Recently recorded" : "Recently recorded here"}</h2>
+        <h2 className="mb-2 font-medium">Recently recorded here</h2>
         <table className={tableClass}>
           <thead>
             <tr>
@@ -87,7 +89,6 @@ export default async function UsedPage({ searchParams }: { searchParams: Promise
               <th className={thClass}>Item</th>
               <th className={thClass}>Quantity</th>
               <th className={thClass}>For</th>
-              {isSupervisor ? <th className={thClass}>Where</th> : null}
               <th className={thClass}>Entered by</th>
             </tr>
           </thead>
@@ -101,13 +102,12 @@ export default async function UsedPage({ searchParams }: { searchParams: Promise
                   {r.inPieces ? " pieces" : ""}
                 </td>
                 <td className={tdClass}>{r.section ?? "-"}</td>
-                {isSupervisor ? <td className={tdClass}>{r.locationName}</td> : null}
                 <td className={tdClass}>{r.enteredByName}</td>
               </tr>
             ))}
             {recent.length === 0 ? (
               <tr>
-                <td className={tdClass} colSpan={isSupervisor ? 6 : 5}>
+                <td className={tdClass} colSpan={5}>
                   Nothing recorded yet.
                 </td>
               </tr>

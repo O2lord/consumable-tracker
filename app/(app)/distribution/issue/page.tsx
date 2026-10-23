@@ -15,27 +15,26 @@ export const metadata = { title: "Issue" };
 export default async function IssuePage({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
   const session = await requirePermission("issue");
   const sp = await searchParams;
-  const isSupervisor = canWorkAtAnyLocation(session.role);
-  const allLocations = await listActiveLocations();
-  const locations = isSupervisor ? allLocations : undefined;
-  const workLocationId = session.homeLocationId;
-  // What the person's own location does for stock (a bench or the blood bank issues for its department only).
-  const homeServiceRole = allLocations.find((l) => l.id === workLocationId)?.serviceRole ?? null;
+  // Where the person is working: set in the app bar (a supervisor's choice, or everyone else's home location).
+  const workLocationId = session.workLocationId;
 
-  if (!isSupervisor && !workLocationId) {
+  if (!workLocationId) {
     return (
       <p className="max-w-xl rounded-xl border border-line bg-surface p-4 text-sm">
-        Your account has no home location, so you cannot issue stock. Ask an admin to set one.
+        {canWorkAtAnyLocation(session.role)
+          ? "Choose where you are working, at the top of the page, to issue stock."
+          : "Your account has no home location, so you cannot issue stock. Ask an admin to set one."}
       </p>
     );
   }
 
-  // Supervisors and admins work at any location, so they see issues from everywhere (with a Where column).
-  // Everyone else sees only their own location.
-  // One line per bottle, however many investigations it is linked to.
-  const recentPage = await listIssuesPage(isSupervisor ? undefined : (workLocationId as string), parsePage(sp.page));
+  // What the working location does for stock (a bench or the blood bank issues for its department only).
+  const workServiceRole = (await listActiveLocations()).find((l) => l.id === workLocationId)?.serviceRole ?? null;
+
+  // The issues at the working location. One line per bottle, however many investigations it is linked to.
+  const recentPage = await listIssuesPage(workLocationId, parsePage(sp.page));
   const recent = recentPage.rows;
-  const colCount = 4;
+  const colCount = 3;
 
   // For the items issued with a bottle: each active test with the per-patient items one run normally uses, and the
   // item types that can be added to the list. Serialized items are left out: they are scanned and issued on their own.
@@ -50,6 +49,7 @@ export default async function IssuePage({ searchParams }: { searchParams: Promis
     .map((t) => ({
       code: t.code,
       name: t.name,
+      requiredContainerType: t.requiredContainerType,
       confirmed: t.consumptionConfirmed,
       items: (standardByTest.get(t.id) ?? []).map((i) => ({ itemTypeId: i.itemTypeId, quantity: i.quantity })),
     }));
@@ -76,6 +76,9 @@ export default async function IssuePage({ searchParams }: { searchParams: Promis
   return (
     <div className="flex flex-col gap-6">
       <IssueForms
+        // A new working location starts the form over: an open pop-up, the stock check and a carried-over request
+        // all belong to the place they were started at.
+        key={workLocationId}
         header={
           <>
             <h1 className="text-[22px] font-bold tracking-tight">Issue</h1>
@@ -86,22 +89,20 @@ export default async function IssuePage({ searchParams }: { searchParams: Promis
             </p>
           </>
         }
-        locations={locations?.map((l) => ({ id: l.id, name: l.name, serviceRole: l.serviceRole }))}
-        defaultLocationId={workLocationId ?? undefined}
-        homeServiceRole={homeServiceRole}
+        workLocationId={workLocationId}
+        workServiceRole={workServiceRole}
         canOverride={can(session.role, "approve_override")}
         tests={tests}
         bulkItems={bulkItems}
       />
 
       <section className="overflow-x-auto rounded-xl border border-line bg-surface px-2 py-1">
-        <h2 className="mb-2 font-medium">{isSupervisor ? "Recently issued" : "Recently issued here"}</h2>
+        <h2 className="mb-2 font-medium">Recently issued here</h2>
         <table className={tableClass}>
           <thead>
             <tr>
               <th className={thClass}>Patient</th>
               <th className={thClass}>Bottle</th>
-              <th className={thClass}>Where</th>
               <th className={thClass} />
             </tr>
           </thead>
@@ -118,7 +119,6 @@ export default async function IssuePage({ searchParams }: { searchParams: Promis
                     `${r.quantity}${r.inPieces ? " pieces of" : " x"} ${r.itemName}`
                   )}
                 </td>
-                <td className={tdClass}>{r.locationName}</td>
                 <td className={tdClass}>
                   {r.serial ? (
                     <span className="flex gap-3">

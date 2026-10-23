@@ -3,6 +3,7 @@ import { getSession } from "@/server/auth/session";
 import { can } from "@/server/auth/permissions";
 import { DomainError } from "@/server/domain/errors";
 import { printLabels, renderPdf, renderTspl, renderTsplPreview, renderZpl, type LabelTarget } from "@/server/services/labels.service";
+import { TURNS, type PdfOptions, type Turn } from "@/lib/label-pdf";
 
 // GET  /api/labels?batch=BT...|serial=CT...|delivery=DV...&format=pdf|zpl|tspl|preview[&layout=label|a4]&only=...][&pick=1,3,5-7]  -> file
 // POST /api/labels  { batch } or { serial } or { delivery }, with optional { only }                       -> prints (USB queue as TSPL, or network Zebra as ZPL)
@@ -60,6 +61,32 @@ function parsePick(raw: unknown): number[] | undefined | { error: string } {
   return [...out].sort((x, y) => x - y);
 }
 
+/**
+ * The shape of a PDF label can be tuned from the URL while calibrating a printer: w and h (label width and height
+ * in mm), pw (page width in mm), turn (none, cw, ccw, flip), portrait (cw or ccw: a tall page with the label turned
+ * inside it), shift (mm, negative = left) and outline=1 (border at the
+ * label's edges). Anything left out or out of range keeps the default (see lib/label-pdf.ts).
+ */
+function pdfOptionsFrom(params: URLSearchParams): PdfOptions {
+  const num = (name: string): number | undefined => {
+    const raw = params.get(name);
+    if (raw === null || raw.trim() === "") return undefined;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : undefined;
+  };
+  const turn = params.get("turn");
+  const portrait = params.get("portrait");
+  return {
+    labelW: num("w"),
+    labelH: num("h"),
+    pageW: num("pw"),
+    shiftX: num("shift"),
+    turn: turn && (TURNS as readonly string[]).includes(turn) ? (turn as Turn) : undefined,
+    portrait: portrait === "cw" || portrait === "ccw" ? portrait : undefined,
+    outline: params.get("outline") === "1" ? true : undefined,
+  };
+}
+
 function failure(err: unknown) {
   if (err instanceof DomainError) {
     const status = err.code === "NOT_FOUND" ? 404 : err.code === "CONFIGURATION" ? 500 : 400;
@@ -110,7 +137,7 @@ export async function GET(request: NextRequest) {
     }
     if (format === "pdf") {
       const layout = params.get("layout") === "a4" ? "a4" : "label";
-      const { bytes, name } = await renderPdf(target, layout, pick);
+      const { bytes, name } = await renderPdf(target, layout, pick, pdfOptionsFrom(params));
       return new Response(bytes as unknown as BodyInit, {
         headers: {
           "Content-Type": "application/pdf",

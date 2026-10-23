@@ -58,6 +58,22 @@ describe("resolveWorkLocation", () => {
     expect(resolveWorkLocation({ role: "SUPERVISOR", homeLocationId: LAB })).toBe(LAB);
     expect(() => resolveWorkLocation({ role: "SUPERVISOR", homeLocationId: null })).toThrow(ValidationError);
   });
+
+  it("works at the location a supervisor chose in the app bar, not their home", () => {
+    const sup = { role: "SUPERVISOR" as const, homeLocationId: LAB, workLocationId: OTHER };
+    expect(resolveWorkLocation(sup)).toBe(OTHER);
+    expect(resolveWorkLocation(sup, OTHER)).toBe(OTHER);
+  });
+
+  it("refuses a form that was rendered for a different location than the one now chosen", () => {
+    const sup = { role: "SUPERVISOR" as const, homeLocationId: LAB, workLocationId: OTHER };
+    expect(() => resolveWorkLocation(sup, LAB)).toThrow(WrongLocationError);
+  });
+
+  it("falls back to home when a supervisor has not chosen, and ignores a chosen location for a distributor", () => {
+    expect(resolveWorkLocation({ role: "SUPERVISOR", homeLocationId: LAB, workLocationId: null })).toBe(LAB);
+    expect(resolveWorkLocation({ role: "DISTRIBUTOR", homeLocationId: LAB, workLocationId: OTHER })).toBe(LAB);
+  });
 });
 
 describe("assertCanOverride", () => {

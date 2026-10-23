@@ -113,6 +113,8 @@ export const users = consumables.table("users", {
   // The role's code (roles.code).
   role: text("role").notNull().references(() => roles.code),
   homeLocationId: uuid("home_location_id").references(() => locations.id),
+  // Where a supervisor or admin is working right now, chosen in the app bar. Null means their home location.
+  workLocationId: uuid("work_location_id").references(() => locations.id),
   active: boolean("active").notNull().default(true),
   createdAt,
   updatedAt,

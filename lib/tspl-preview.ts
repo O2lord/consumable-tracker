@@ -67,11 +67,6 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
     font-weight: 600; cursor: pointer; }
   .print:hover:not(:disabled) { background: #379158; }
   .print:disabled { opacity: .65; cursor: default; }
-  #status { position: fixed; top: 66px; right: 24px; z-index: 3; max-width: min(420px, calc(100vw - 48px)); padding: 10px 14px;
-    border-radius: 6px; font-size: 13px; line-height: 1.45; box-shadow: 0 2px 10px rgba(0,0,0,.5); }
-  #status[hidden] { display: none; }
-  #status.ok { background: #1e4d33; color: #d7f3e1; }
-  #status.err { background: #5c2020; color: #fbd5d5; }
   main { display: flex; flex-direction: column; align-items: safe center; gap: 20px; padding: 28px 24px 48px; }
   .seg { display: flex; padding: 2px; background: #3c4043; border-radius: 6px; }
   .seg button { height: 30px; padding: 0 12px; border: 0; border-radius: 4px; background: transparent; color: #bdc1c6; font: inherit; font-size: 13px; cursor: pointer; }
@@ -92,15 +87,15 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
   body.custom .lbl.sel .tick { background: #34a853; border-color: #34a853; }
   body.custom .lbl.sel .tick::after { content: ""; position: absolute; left: 5px; top: 1px; width: 6px; height: 11px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
   svg { display: block; flex: none; width: calc(520px * var(--zoom)); height: auto; background: #fff; border-radius: 2px; box-shadow: 0 2px 10px rgba(0,0,0,.55); }
-  @media (max-width: 760px) { .meta { display: none; } header { padding: 0 12px; } #status { right: 12px; } main { padding: 20px 12px 40px; } #pickbar { padding: 8px 12px; } .tick { left: 4px; top: 4px; } }
-  @media print { header, #status, #pickbar, .num, .tick { display: none !important; } body { background: #fff; } main { padding: 0; gap: 0; } .lbl { width: 100%; } svg { width: 100%; box-shadow: none; opacity: 1 !important; outline: 0 !important; } body.custom .lbl:not(.sel) { display: none; } }
+  @media (max-width: 760px) { .meta { display: none; } header { padding: 0 12px; } main { padding: 20px 12px 40px; } #pickbar { padding: 8px 12px; } .tick { left: 4px; top: 4px; } }
+  @media print { header, #pickbar, .num, .tick { display: none !important; } body { background: #fff; } main { padding: 0; gap: 0; } .lbl { width: 100%; } svg { width: 100%; box-shadow: none; opacity: 1 !important; outline: 0 !important; } body.custom .lbl:not(.sel) { display: none; } }
 </style></head><body>
 <header>
   <h1>Labels ${esc(title)}</h1>
   <div class="tools">
     <span class="meta">${count} &middot; ${TSPL_LABEL_W_MM} &times; ${TSPL_LABEL_H_MM} mm</span>
-    <div class="seg" role="group" aria-label="What to print">
-      <button id="mode-all" type="button" class="on">Print all</button>
+    <div class="seg" role="group" aria-label="Which labels">
+      <button id="mode-all" type="button" class="on">All labels</button>
       <button id="mode-custom" type="button">Custom</button>
     </div>
     <div class="zoom" role="group" aria-label="Zoom">
@@ -108,10 +103,9 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
       <button id="zoom-value" type="button" title="Reset to 50%">50%</button>
       <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
     </div>
-    <button id="print" class="print" type="button">Print</button>
+    <button id="print" class="print" type="button">Open PDF</button>
   </div>
 </header>
-<div id="status" role="status" hidden></div>
 <div id="pickbar" hidden>
   <button id="sel-all" type="button">Select all</button>
   <button id="sel-none" type="button">Clear</button>
@@ -120,7 +114,6 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
   <span id="pickcount"></span>
 </div>
 <main>${figures.join("")}</main>
-<script src="/print-bridge.js"></script>
 <script>
 (function () {
   var STEPS = [25, 50, 75, 100, 125, 150, 200, 300];
@@ -156,13 +149,11 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
   });
   apply();
 
-  // Print: the same labels as printer commands, sent to the label printer by /print-bridge.js (QZ Tray first, then
-  // the print helper on this computer).
+  // Open PDF: the same labels as a PDF in a new tab. Staff check it there and print with the system print window
+  // (nothing is installed on the PC besides the printer's driver).
   var btn = document.getElementById("print");
-  var box = document.getElementById("status");
-  var hideTimer = null;
 
-  // Choosing what to print: "Print all", or "Custom" where you tick the labels you want. Labels are numbered as shown.
+  // Choosing which labels: "All labels", or "Custom" where you tick the labels you want. Labels are numbered as shown.
   var figs = Array.prototype.slice.call(document.querySelectorAll(".lbl"));
   var total = figs.length;
   var custom = false;
@@ -198,10 +189,10 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
     pickCount.textContent = nums.length + " of " + total + " selected";
     if (document.activeElement !== rangeIn) rangeIn.value = compress(nums);
     if (custom) {
-      btn.textContent = nums.length ? "Print " + nums.length + " selected" : "Select labels";
+      btn.textContent = nums.length ? "Open PDF of " + nums.length + " selected" : "Select labels";
       btn.disabled = nums.length === 0;
     } else {
-      btn.textContent = "Print";
+      btn.textContent = "Open PDF";
       btn.disabled = false;
     }
   }
@@ -240,36 +231,14 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
   });
   rangeIn.addEventListener("blur", refresh);
   refresh();
-  function show(kind, text) {
-    clearTimeout(hideTimer);
-    box.className = kind;
-    box.textContent = text;
-    box.hidden = false;
-    if (kind === "ok") hideTimer = setTimeout(function () { box.hidden = true; }, 4000);
-  }
-  btn.onclick = async function () {
+  btn.onclick = function () {
     var nums = picked();
     if (custom && nums.length === 0) return;
-    btn.disabled = true;
-    btn.textContent = "Printing...";
-    box.hidden = true;
-    try {
-      var url = new URL(location.href);
-      url.searchParams.set("format", "tspl");
-      if (custom) url.searchParams.set("pick", compress(nums));
-      else url.searchParams.delete("pick");
-      var res = await fetch(url.toString(), { cache: "no-store", credentials: "same-origin" });
-      if (!res.ok) {
-        var body = await res.json().catch(function () { return {}; });
-        throw new Error(body.error || "Could not get the labels");
-      }
-      var sent = await window.sendLabelsToPrinter(await res.text());
-      show("ok", "Sent " + sent + (sent === 1 ? " label" : " labels") + " to the printer.");
-    } catch (err) {
-      show("err", err && err.message ? err.message : "Printing failed");
-    } finally {
-      refresh();
-    }
+    var url = new URL(location.href);
+    url.searchParams.set("format", "pdf");
+    if (custom) url.searchParams.set("pick", compress(nums));
+    else url.searchParams.delete("pick");
+    window.open(url.toString(), "_blank");
   };
 })();
 </script>

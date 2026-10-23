@@ -5,4 +5,10 @@ export interface FormState {
   error?: string;
   /** Shown in green after a successful save. */
   message?: string;
+  /** The bottle an issue was saved for, so the page can open its label. */
+  serial?: string;
+  /** Every bottle an "issue all" run saved, in order. With an `error` too, the run stopped part-way. */
+  serials?: string[];
+  /** The containers of those bottles (EDTA, PLAIN...), so the pop-up knows which are done. */
+  containers?: string[];
 }

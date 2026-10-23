@@ -21,7 +21,6 @@ import {
 import { Tabs } from "@/components/ui/Tabs";
 import { ConfirmDispatchBar } from "./ConfirmDispatchBar";
 import { DraftBuilder } from "./DraftBuilder";
-import { PrintBarcodeButton } from "./PrintBarcodeButton";
 import { cancelTransferAction, removeItemAction } from "./actions";
 
 export const metadata = { title: "Transfer" };
@@ -128,7 +127,9 @@ export default async function TransferPage({ params }: { params: Promise<{ code:
         </div>
         {hasSlip ? (
           <div className="flex flex-wrap gap-3">
-            <PrintBarcodeButton code={t.code} className={linkButtonClass} />
+            <a href={`/api/transfers/${t.code}?format=label`} target="_blank" rel="noreferrer" className={linkButtonClass}>
+              Open barcode label (PDF)
+            </a>
             <a href={`/api/transfers/${t.code}?format=pdf`} target="_blank" rel="noreferrer" className={linkButtonClass}>
               Open transfer slip (PDF)
             </a>

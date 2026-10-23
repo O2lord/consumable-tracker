@@ -5,16 +5,10 @@ import { ActionForm } from "@/components/forms/ActionForm";
 import type { FormState } from "@/components/forms/form-state";
 import { DatePicker } from "@/components/ui/DatePicker";
 import { Field } from "@/components/ui/Field";
-import { Select } from "@/components/ui/Dropdown";
 import { buttonClass, ghostButtonClass, inputClass } from "@/components/ui/styles";
 import { isPackUnit, isPieceUnit, type CountUnit } from "@/lib/pack-size";
 import { CountUnitSelect } from "../receive/CountUnitSelect";
 import { recordUsageAction } from "./actions";
-
-interface Place {
-  id: string;
-  name: string;
-}
 
 /** A bench supply that can be recorded as used. `unit` says what the quantity counts ("pieces", "Roll"...). */
 export interface BenchItemOption {
@@ -28,9 +22,8 @@ export interface BenchItemOption {
 }
 
 interface Props {
-  /** Supervisors choose where they are working; everyone else works at their own location. */
-  locations?: Place[];
-  defaultLocationId?: string;
+  /** Where the person is working (the app bar). Sent so the server refuses a form left open across a switch. */
+  workLocationId: string;
   benchItems: BenchItemOption[];
   /** What is on the shelf now: `{ [itemTypeId]: { [locationId]: available } }`. A missing entry means none. */
   availability: Record<string, Record<string, number>>;
@@ -61,8 +54,8 @@ function unitWord(unit: string, n: number): string {
  * What is ticked lives in React state and is submitted through hidden fields, so searching the list (which
  * removes rows) can never drop a ticked item from the entry.
  */
-export function UsedForm({ locations, defaultLocationId, benchItems, availability, today, earliest }: Props) {
-  const [locationId, setLocationId] = useState(defaultLocationId ?? locations?.[0]?.id ?? "");
+export function UsedForm({ workLocationId, benchItems, availability, today, earliest }: Props) {
+  const locationId = workLocationId;
   const [lines, setLines] = useState<{ itemTypeId: string; quantity: string; countedIn: CountUnit }[]>([]);
   const [choosing, setChoosing] = useState(true);
   const [query, setQuery] = useState("");
@@ -70,7 +63,7 @@ export function UsedForm({ locations, defaultLocationId, benchItems, availabilit
   // With nothing chosen there is nothing to enter a quantity for, so the list is always open then.
   const showList = choosing || lines.length === 0;
 
-  // What the shelf holds at the chosen location. It follows "Working at", so changing the place updates every row.
+  // What the shelf holds at the working location.
   const stockOf = (id: string) => availability[id]?.[locationId] ?? 0;
   const itemOf = (id: string) => benchItems.find((b) => b.id === id);
   // What the entry takes off the shelf, in pieces: a count of packs is turned into pieces for the check and for saving.
@@ -122,19 +115,8 @@ export function UsedForm({ locations, defaultLocationId, benchItems, availabilit
       submitLabel="Record usage"
       disabled={showList || lines.length === 0 || anyShort || anyInvalid}
     >
-      <div className={`grid gap-3 sm:grid-cols-2 ${locations ? "lg:grid-cols-3" : ""}`}>
-        {locations ? (
-          <Field label="Working at">
-            <Select
-              name="locationId"
-              ariaLabel="Working at"
-              required
-              value={locationId}
-              onChange={setLocationId}
-              options={locations.map((l) => ({ value: l.id, label: l.name }))}
-            />
-          </Field>
-        ) : null}
+      <input type="hidden" name="locationId" value={locationId} />
+      <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Date used" tip="Today, or an earlier day if one was missed.">
           <DatePicker name="usedOn" required defaultValue={today} min={earliest} max={today} ariaLabel="Date used" />
         </Field>

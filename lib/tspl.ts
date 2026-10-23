@@ -116,29 +116,6 @@ export function labelToTspl(label: Label): string {
   ].join("\r\n");
 }
 
-/**
- * Just the transfer barcode and its code, to stick on the box (the TSPL twin of renderTransferLabelPdf). Same roll,
- * gap, direction and left margin as the other labels, with the barcode and the code centred between the margins.
- */
-export function transferLabelToTspl(code: string): string {
-  const value = tsplText(code);
-  const modules = barcodeModules(value.length);
-  const narrow = modules * 2 <= INNER_DOTS ? 2 : 1;
-  const barcodeX = LEFT_X_DOTS + Math.max(0, Math.floor((INNER_DOTS - modules * narrow) / 2));
-  const textX = LEFT_X_DOTS + Math.max(0, Math.floor((INNER_DOTS - value.length * FONT_CELL["3"].w) / 2));
-
-  return [
-    `SIZE ${TSPL_LABEL_W_MM} mm,${TSPL_LABEL_H_MM} mm`,
-    `GAP ${TSPL_GAP_MM} mm,0 mm`,
-    `DIRECTION ${TSPL_DIRECTION}`,
-    "REFERENCE 0,0",
-    "CLS",
-    `BARCODE ${barcodeX},16,"128",100,0,0,${narrow},${narrow},"${value}"`,
-    `TEXT ${textX},130,"3",0,1,1,"${value}"`,
-    "PRINT 1,1",
-  ].join("\r\n") + "\r\n";
-}
-
 /** One job holding every label, one after another. */
 export function labelsToTspl(labels: Label[]): string {
   return labels.map(labelToTspl).join("\r\n") + "\r\n";

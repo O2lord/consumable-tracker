@@ -52,7 +52,7 @@ export default async function BatchLabelsPage({ params }: { params: Promise<{ ba
           <h1 className={pageTitleClass}>
             {isSerial ? batch.quantity : describeRequestQuantity(batch.quantity, batch.unit, false)} x {batch.itemName}
           </h1>
-          <LabelButtons batch={batch.code} only="batch" label="Print Batch Label" single />
+          <LabelButtons batch={batch.code} only="batch" label="Open batch label PDF" single />
         </div>
         <p className={pageSubtitleClass}>
           {!isSerial && isPackUnit(batch.unit) && batch.packSize > 1

@@ -26,14 +26,28 @@ import type {
 // Business rules for issue, return and void (architecture section 8). Pure: no I/O.
 // Services load the facts, call these, then write.
 
-/** Where the person is working. Supervisors and admins may pick any location; everyone else uses their own. */
+/**
+ * Where the person is working. Supervisors and admins work at the location they chose in the app bar (their home
+ * location until they choose one); everyone else uses their own.
+ *
+ * `requestedLocationId` is the location a form or screen was showing when it was sent. For someone who may work
+ * anywhere it must still be the working location, so a second tab or an open pop-up that was rendered before a
+ * switch cannot act at the old place. Callers that know only the home location (no `workLocationId`) may still
+ * name any location.
+ */
 export function resolveWorkLocation(
-  actor: Pick<Actor, "role" | "homeLocationId">,
+  actor: Pick<Actor, "role" | "homeLocationId" | "workLocationId">,
   requestedLocationId?: string,
 ): string {
   if (canWorkAtAnyLocation(actor.role)) {
-    const id = requestedLocationId ?? actor.homeLocationId;
-    if (!id) throw new ValidationError("Choose the location you are working at");
+    const current = actor.workLocationId ?? actor.homeLocationId;
+    if (requestedLocationId && actor.workLocationId && requestedLocationId !== actor.workLocationId) {
+      throw new WrongLocationError(
+        "You switched where you are working while this page was open. Reload the page and try again",
+      );
+    }
+    const id = requestedLocationId ?? current;
+    if (!id) throw new ValidationError("Choose the location you are working at, at the top of the page");
     return id;
   }
   if (!actor.homeLocationId) {

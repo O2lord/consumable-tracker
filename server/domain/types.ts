@@ -148,6 +148,12 @@ export interface Actor {
   userId: string;
   role: UserRole;
   homeLocationId: string | null;
+  /**
+   * Where the person is working right now: for someone who may work at any location, the one chosen in the app bar;
+   * for everyone else always their home location. Optional so older callers and tests that only know the home
+   * location keep working (it then falls back to home).
+   */
+  workLocationId?: string | null;
 }
 
 /** Actions that move a SERIAL unit between states (see architecture section 4). */

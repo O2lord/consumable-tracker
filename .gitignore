@@ -47,7 +47,4 @@ next-env.d.ts
 # barcode decoder copied from node_modules by scripts/copy-zxing-wasm.mjs
 /public/vendor/
 
-# setup package built by scripts/make-setup-zip.sh
-/dist/
-
 certificates

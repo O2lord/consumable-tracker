@@ -18,11 +18,11 @@ export default async function ReceivePage({
 }) {
   const session = await requirePermission("receive");
   const sp = await searchParams;
-  const anywhere = canWorkAtAnyLocation(session.role);
-  const noLocation = !anywhere && !session.homeLocationId;
-  const toLocationId = anywhere ? undefined : (session.homeLocationId as string);
+  // Transfers coming to the location the person is working at (set in the app bar).
+  const toLocationId = session.workLocationId;
+  const noLocation = !toLocationId;
 
-  const [pendingPage, receivedPage] = noLocation
+  const [pendingPage, receivedPage] = !toLocationId
     ? [pageOfArray([], 1), pageOfArray([], 1)]
     : await Promise.all([
         listTransfersPage({ statuses: ["DISPATCHED", "RECEIVING"], toLocationId }, parsePage(sp.ppage)),
@@ -49,7 +49,9 @@ export default async function ReceivePage({
         <>
           <div>{header}</div>
           <p className="max-w-xl rounded-xl border border-line bg-surface p-4 text-sm">
-            Your account has no home location, so you cannot receive stock. Ask an admin to set it.
+            {canWorkAtAnyLocation(session.role)
+              ? "Choose where you are working, at the top of the page, to receive stock."
+              : "Your account has no home location, so you cannot receive stock. Ask an admin to set it."}
           </p>
         </>
       ) : (
@@ -68,7 +70,6 @@ export default async function ReceivePage({
               <th className={thClass}>Transfer</th>
               <th className={thClass}>Status</th>
               <th className={thClass}>From</th>
-              {anywhere ? <th className={thClass}>To</th> : null}
               <th className={thClass}>Dispatched</th>
             </tr>
           </thead>
@@ -86,13 +87,12 @@ export default async function ReceivePage({
                 </td>
                 <td className={tdClass}>{TRANSFER_STATUS_LABEL[t.status] ?? t.status}</td>
                 <td className={tdClass}>{t.fromName}</td>
-                {anywhere ? <td className={tdClass}>{t.toName}</td> : null}
                 <td className={tdClass}>{t.dispatchedAt ? t.dispatchedAt.toLocaleString("en-GB") : "-"}</td>
               </tr>
             ))}
             {pending.length === 0 ? (
               <tr>
-                <td className={tdClass} colSpan={anywhere ? 5 : 4}>
+                <td className={tdClass} colSpan={4}>
                   Nothing is waiting.
                 </td>
               </tr>
@@ -117,7 +117,6 @@ export default async function ReceivePage({
               <th className={thClass}>Transfer</th>
               <th className={thClass}>Status</th>
               <th className={thClass}>From</th>
-              {anywhere ? <th className={thClass}>To</th> : null}
               <th className={thClass}>Items</th>
               <th className={thClass}>Received</th>
             </tr>
@@ -132,7 +131,6 @@ export default async function ReceivePage({
                 </td>
                 <td className={tdClass}>{TRANSFER_STATUS_LABEL[t.status] ?? t.status}</td>
                 <td className={tdClass}>{t.fromName}</td>
-                {anywhere ? <td className={tdClass}>{t.toName}</td> : null}
                 <td className={tdClass}>
                   {[t.serialCount ? `${t.serialCount} bottle${t.serialCount === 1 ? "" : "s"}` : "", t.quantityTotal ? `${t.quantityTotal} bulk` : ""]
                     .filter(Boolean)
@@ -143,7 +141,7 @@ export default async function ReceivePage({
             ))}
             {received.length === 0 ? (
               <tr>
-                <td className={tdClass} colSpan={anywhere ? 6 : 5}>
+                <td className={tdClass} colSpan={5}>
                   Nothing has been received yet.
                 </td>
               </tr>

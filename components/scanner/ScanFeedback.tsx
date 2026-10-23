@@ -44,6 +44,13 @@ function beep(kind: ScanOutcomeKind, ctxRef: { current: AudioContext | null }) {
   }
 }
 
+const sharedCtx: { current: AudioContext | null } = { current: null };
+
+/** Plays the same tone as the scan banner, for a result shown some other way (a pop-up, a toast). */
+export function playScanTone(kind: ScanOutcomeKind) {
+  beep(kind, sharedCtx);
+}
+
 /** Large success / already-scanned / error banner for fast, eyes-off scanning. */
 export function ScanFeedback({ outcome, nonce }: { outcome: ScanOutcome | null; nonce: number }) {
   const ctxRef = useRef<AudioContext | null>(null);

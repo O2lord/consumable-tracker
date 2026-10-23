@@ -26,7 +26,9 @@ export default async function StockItemPage({
   const isSupervisor = canWorkAtAnyLocation(session.role);
   const { code } = await params;
   const { location } = await searchParams;
-  const locationId = isSupervisor && location ? location : session.homeLocationId;
+  // The working location from the app bar. A scanned label can link to another location, so a supervisor's
+  // ?location= still opens that one (this page only shows stock, it changes nothing).
+  const locationId = isSupervisor && location ? location : session.workLocationId;
 
   if (!locationId) {
     return (
@@ -41,7 +43,7 @@ export default async function StockItemPage({
 
   const locations = isSupervisor ? await listActiveLocations() : [];
   const where = isSupervisor ? (locations.find((l) => l.id === locationId)?.name ?? "this location") : "your location";
-  const backHref = `/distribution/stock${isSupervisor ? `?location=${locationId}` : ""}`;
+  const backHref = "/distribution/stock";
   const bottleHref = (serial: string) => `/distribution/issue/${encodeURIComponent(serial)}`;
 
   return (

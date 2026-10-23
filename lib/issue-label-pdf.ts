@@ -10,6 +10,13 @@ const PAGE_W = 75 * MM;
 // The label is as tall as its content. Content is laid out on a tall scratch page, then the page is cut down to fit.
 const SCRATCH_H = 150 * MM;
 const MARGIN = 3 * MM;
+// Less space above the first line than at the sides: the printer feeds the label a little low, so the bottom of the
+// label (the barcode and its serial) was being cut off. A negative top margin starts the text just above the page edge
+// (only the empty space above the capital letters is lost), which moves the whole artwork up.
+const TOP_MARGIN = -0.8 * MM;
+// Everything on the label (text, gaps, barcode) is drawn at this fraction of its full size. Lower it to shrink the
+// artwork, raise it to 1 for the full size.
+const SCALE = 0.9;
 const MAX_REFERENCES = 5;
 
 export interface IssueLabelData {
@@ -34,14 +41,15 @@ export async function renderIssueLabelPdf(label: IssueLabelData): Promise<Uint8A
   const page = pdf.addPage([PAGE_W, SCRATCH_H]);
   const inner = PAGE_W - 2 * MARGIN;
 
-  let y = SCRATCH_H - MARGIN;
+  let y = SCRATCH_H - TOP_MARGIN;
   const line = (text: string, size: number, font = regular, gap = 1.5) => {
-    y -= size;
-    page.drawText(safe(text), { x: MARGIN, y, size, font, maxWidth: inner });
-    y -= gap;
+    const s = size * SCALE;
+    y -= s;
+    page.drawText(safe(text), { x: MARGIN, y, size: s, font, maxWidth: inner });
+    y -= gap * SCALE;
   };
 
-  line(label.patientHospitalNo ?? label.locationName, 11, bold, 3);
+  line(label.patientHospitalNo ?? label.locationName, 11, bold, 2);
 
   const shown = label.references.slice(0, MAX_REFERENCES);
   for (const r of shown) line(r.testCode ? `${r.ref}  ${r.testCode}` : r.ref, 8, regular, 1);
@@ -50,18 +58,18 @@ export async function renderIssueLabelPdf(label: IssueLabelData): Promise<Uint8A
   }
 
   const collector = [label.collectorType, label.collectorName].filter(Boolean).join(": ");
-  y -= 2;
-  line(`${label.issuedAt.toLocaleDateString("en-GB")}${collector ? `  ${collector}` : ""}`, 7, regular, 3);
+  y -= 2 * SCALE;
+  line(`${label.issuedAt.toLocaleDateString("en-GB")}${collector ? `  ${collector}` : ""}`, 7, regular, 2);
 
   const image = await pdf.embedPng(await code128Png(label.serial, { height: 10 }));
-  const height = Math.min((11 * MM), image.height * (inner / image.width));
+  const height = Math.min(9 * MM * SCALE, image.height * (inner / image.width));
   const width = image.width * (height / image.height);
   // The barcode sits just under the details and the serial under it, so the label takes only the space it fills.
-  const barcodeGap = 1; // the date line above already leaves 3 pt below it
+  const barcodeGap = 1 * SCALE; // the date line above already leaves a gap below it
   const barcodeY = y - barcodeGap - height;
-  const serialY = barcodeY - 9;
+  const serialY = barcodeY - 8 * SCALE;
   page.drawImage(image, { x: MARGIN, y: barcodeY, width: Math.min(width, inner), height });
-  page.drawText(safe(label.serial), { x: MARGIN, y: serialY, size: 8, font: bold, color: rgb(0, 0, 0) });
+  page.drawText(safe(label.serial), { x: MARGIN, y: serialY, size: 8 * SCALE, font: bold, color: rgb(0, 0, 0) });
 
   // Cut the page down: move everything down so the serial sits one margin above the bottom edge, then shorten.
   const unused = serialY - MARGIN;

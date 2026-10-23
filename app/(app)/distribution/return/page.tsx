@@ -1,11 +1,11 @@
 import Link from "next/link";
 import { requirePermission } from "@/server/auth/session";
 import { canWorkAtAnyLocation } from "@/server/auth/permissions";
-import { listActiveLocations, listVoidReasons } from "@/server/services/catalog.service";
+import { listVoidReasons } from "@/server/services/catalog.service";
 import { listOutAtLocationPage, listReturnedAtLocationPage } from "@/server/services/stock.service";
 import { tableClass, tdClass, thClass } from "@/components/ui/styles";
 import { Pagination } from "@/components/ui/Pagination";
-import { pageOfArray, parsePage } from "@/lib/pagination";
+import { parsePage } from "@/lib/pagination";
 import { ReturnForms } from "./ReturnForms";
 import { ReturnTabs } from "./ReturnTabs";
 
@@ -24,22 +24,23 @@ export default async function ReturnPage({
 }) {
   const session = await requirePermission("return");
   const sp = await searchParams;
-  const isSupervisor = canWorkAtAnyLocation(session.role);
-  const workLocationId = session.homeLocationId;
+  // Where the person is working: set in the app bar (a supervisor's choice, or everyone else's home location).
+  const workLocationId = session.workLocationId;
 
-  if (!isSupervisor && !workLocationId) {
+  if (!workLocationId) {
     return (
       <p className="max-w-xl rounded-xl border border-line bg-surface p-4 text-sm">
-        Your account has no home location. Ask an admin to set one.
+        {canWorkAtAnyLocation(session.role)
+          ? "Choose where you are working, at the top of the page, to record returns."
+          : "Your account has no home location. Ask an admin to set one."}
       </p>
     );
   }
 
-  const [reasons, locations, outPage, returnedPage] = await Promise.all([
+  const [reasons, outPage, returnedPage] = await Promise.all([
     listVoidReasons(),
-    isSupervisor ? listActiveLocations() : Promise.resolve(undefined),
-    workLocationId ? listOutAtLocationPage(workLocationId, parsePage(sp.opage)) : Promise.resolve(pageOfArray([], 1)),
-    workLocationId ? listReturnedAtLocationPage(workLocationId, parsePage(sp.rpage)) : Promise.resolve(pageOfArray([], 1)),
+    listOutAtLocationPage(workLocationId, parsePage(sp.opage)),
+    listReturnedAtLocationPage(workLocationId, parsePage(sp.rpage)),
   ]);
   // The out list already has one row per bottle.
   const bottles = outPage.rows;
@@ -48,6 +49,8 @@ export default async function ReturnPage({
   return (
     <div className="flex flex-col gap-6">
       <ReturnForms
+        // A new working location starts the forms over, so an open pop-up never acts at the old place.
+        key={workLocationId}
         header={
           <>
             <h1 className="text-[22px] font-bold tracking-tight">Return</h1>
@@ -55,8 +58,7 @@ export default async function ReturnPage({
           </>
         }
         reasons={reasons.filter((r) => r.active).map((r) => ({ code: r.code, label: r.label }))}
-        locations={locations?.map((l) => ({ id: l.id, name: l.name }))}
-        defaultLocationId={workLocationId ?? undefined}
+        workLocationId={workLocationId}
       />
 
       <ReturnTabs

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { requirePermission } from "@/server/auth/session";
 import { canWorkAtAnyLocation } from "@/server/auth/permissions";
-import { listActiveLocations, listVoidReasons } from "@/server/services/catalog.service";
+import { listVoidReasons } from "@/server/services/catalog.service";
 import { listVoidedAtLocationPage } from "@/server/services/stock.service";
 import { tableClass, tdClass, thClass } from "@/components/ui/styles";
 import { Pagination } from "@/components/ui/Pagination";
@@ -13,20 +13,22 @@ export const metadata = { title: "Void" };
 export default async function VoidPage({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
   const session = await requirePermission("void");
   const sp = await searchParams;
-  const isSupervisor = canWorkAtAnyLocation(session.role);
+  // Where the person is working: set in the app bar (a supervisor's choice, or everyone else's home location).
+  const workLocationId = session.workLocationId;
 
-  if (!isSupervisor && !session.homeLocationId) {
+  if (!workLocationId) {
     return (
       <p className="max-w-xl rounded-xl border border-line bg-surface p-4 text-sm">
-        Your account has no home location. Ask an admin to set one.
+        {canWorkAtAnyLocation(session.role)
+          ? "Choose where you are working, at the top of the page, to void stock."
+          : "Your account has no home location. Ask an admin to set one."}
       </p>
     );
   }
 
-  const [reasons, locations, voidedPage] = await Promise.all([
+  const [reasons, voidedPage] = await Promise.all([
     listVoidReasons(),
-    isSupervisor ? listActiveLocations() : Promise.resolve(undefined),
-    listVoidedAtLocationPage(session.homeLocationId ?? null, parsePage(sp.page)),
+    listVoidedAtLocationPage(workLocationId, parsePage(sp.page)),
   ]);
   const voided = voidedPage.rows;
   const reasonLabel = new Map(reasons.map((r) => [r.code, r.label]));
@@ -34,6 +36,8 @@ export default async function VoidPage({ searchParams }: { searchParams: Promise
   return (
     <div className="flex flex-col gap-6">
       <VoidForms
+      // A new working location starts the forms over, so an open pop-up never acts at the old place.
+      key={workLocationId}
       header={
         <>
           <h1 className="text-[22px] font-bold tracking-tight">Void</h1>
@@ -44,8 +48,7 @@ export default async function VoidPage({ searchParams }: { searchParams: Promise
         </>
       }
       reasons={reasons.filter((r) => r.active).map((r) => ({ code: r.code, label: r.label }))}
-      locations={locations?.map((l) => ({ id: l.id, name: l.name }))}
-      defaultLocationId={session.homeLocationId ?? undefined}
+      workLocationId={workLocationId}
       />
 
       <section className="flex flex-col gap-2">

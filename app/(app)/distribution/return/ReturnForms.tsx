@@ -13,23 +13,8 @@ interface Props {
   /** The page title and intro, shown on the left with the two buttons on the right. */
   header: ReactNode;
   reasons: { code: string; label: string }[];
-  locations?: { id: string; name: string }[];
-  defaultLocationId?: string;
-}
-
-function LocationField({ locations, defaultLocationId }: Pick<Props, "locations" | "defaultLocationId">) {
-  if (!locations) return null;
-  return (
-    <Field label="Working at">
-      <Select
-        name="locationId"
-        ariaLabel="Working at"
-        required
-        defaultValue={defaultLocationId ?? locations[0]?.id}
-        options={locations.map((l) => ({ value: l.id, label: l.name }))}
-      />
-    </Field>
-  );
+  /** Where the person is working (the app bar). Sent so the server refuses a form left open across a switch. */
+  workLocationId: string;
 }
 
 function ReasonField({ reasons, hint }: { reasons: Props["reasons"]; hint: string }) {
@@ -71,7 +56,7 @@ function OutcomeAndReason({
   );
 }
 
-export function ReturnForms({ header, reasons, locations, defaultLocationId }: Props) {
+export function ReturnForms({ header, reasons, workLocationId }: Props) {
   return (
     <FormDialogGroup
       header={header}
@@ -83,7 +68,7 @@ export function ReturnForms({ header, reasons, locations, defaultLocationId }: P
             "Scan the bottle, then say what happened to it. Used means a sample is inside; unused goes back in stock (where this location allows it); unusable is voided with a reason.",
           content: (
             <ActionForm action={returnUnitAction} submitLabel="Record return">
-              <LocationField locations={locations} defaultLocationId={defaultLocationId} />
+              <input type="hidden" name="locationId" value={workLocationId} />
               <ScanField name="serial" label="Scan the bottle" autoFocus />
               <OutcomeAndReason
                 options={[

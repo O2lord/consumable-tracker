@@ -5,10 +5,10 @@ import { redirect } from "next/navigation";
 import { eq } from "drizzle-orm";
 import { env } from "../env";
 import { db } from "../db/client";
-import { roles, users } from "../db/schema";
+import { locations, roles, users } from "../db/schema";
 import type { UserRole } from "../domain/types";
 import { staffIdToEmail, normalizeStaffId } from "../../lib/staff-id";
-import { ADMIN_PERMISSIONS, can, registerRole, type Permission } from "./permissions";
+import { ADMIN_PERMISSIONS, can, canWorkAtAnyLocation, registerRole, type Permission } from "./permissions";
 
 // Session handling on top of Supabase Auth (GoTrue), using its REST API directly.
 // Staff log in with their staff ID; it maps to a synthetic email (lib/staff-id.ts).
@@ -21,7 +21,22 @@ import { ADMIN_PERMISSIONS, can, registerRole, type Permission } from "./permiss
 const ACCESS_COOKIE = "ct-access";
 
 /** How long to wait for Supabase Auth before giving up, so an outage fails fast instead of hanging. */
-const AUTH_TIMEOUT_MS = 5000;
+const AUTH_TIMEOUT_MS = 15000;
+
+/**
+ * The user only ever sees a generic message, so log the real reason (ECONNREFUSED, ENOTFOUND, ETIMEDOUT,
+ * a TimeoutError from AbortSignal, a bad DB connection string...) on the server where it can be diagnosed.
+ * Node's fetch hides the useful code in `err.cause`.
+ */
+function logUnreachable(context: string, err: unknown, target?: string) {
+  const cause = err instanceof Error ? (err as Error & { cause?: unknown }).cause : undefined;
+  console.error(`[auth] ${context}${target ? ` (${target})` : ""}`, {
+    name: err instanceof Error ? err.name : typeof err,
+    message: err instanceof Error ? err.message : String(err),
+    code: (err as { code?: string } | null)?.code,
+    cause,
+  });
+}
 
 /** Thrown when Supabase Auth or the database cannot be reached. Not the same as "not signed in". */
 export class ServiceUnavailableError extends Error {
@@ -39,7 +54,14 @@ export interface Session {
   role: UserRole;
   /** The role's name as admins have written it, for showing to people. */
   roleName: string;
+  /** Where the person belongs. Several checks (receiving, requests, access to a page) rely on this one. */
   homeLocationId: string | null;
+  /**
+   * Where the person is working right now. For someone who may work at any location it is the one they chose in
+   * the app bar, as long as that location is still active; otherwise, and for everyone else, it is their home
+   * location. Issue, Return, Void, Used for test, Stock and the Chrome extension all work at this location.
+   */
+  workLocationId: string | null;
 }
 
 function authConfig() {
@@ -70,6 +92,7 @@ export async function signIn(staffIdInput: string, password: string): Promise<Si
   const { url, apikey } = authConfig();
   const UNAVAILABLE: SignInResult = { ok: false, message: "Cannot reach the server. Check your connection and try again." };
   let res: Response;
+  const startedAt = Date.now();
   try {
     res = await fetch(`${url}/auth/v1/token?grant_type=password`, {
       method: "POST",
@@ -78,7 +101,9 @@ export async function signIn(staffIdInput: string, password: string): Promise<Si
       cache: "no-store",
       signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
     });
-  } catch {
+    console.info(`[auth] signIn: Supabase responded ${res.status} in ${Date.now() - startedAt}ms`);
+  } catch (err) {
+    logUnreachable(`signIn: Supabase Auth request failed after ${Date.now() - startedAt}ms`, err, `${url}/auth/v1/token`);
     return UNAVAILABLE;
   }
   if (!res.ok) {
@@ -112,7 +137,8 @@ async function loadProfile(userId: string): Promise<Session | null> {
   let rows;
   try {
     rows = await queryProfile(userId);
-  } catch {
+  } catch (err) {
+    logUnreachable("loadProfile: database query failed", err);
     throw new ServiceUnavailableError();
   }
   const [row] = rows;
@@ -129,12 +155,15 @@ function queryProfile(userId: string) {
       role: users.role,
       active: users.active,
       homeLocationId: users.homeLocationId,
+      chosenLocationId: users.workLocationId,
+      chosenLocationActive: locations.active,
       roleName: roles.name,
       rolePermissions: roles.permissions,
       roleLocked: roles.locked,
     })
     .from(users)
     .innerJoin(roles, eq(roles.code, users.role))
+    .leftJoin(locations, eq(locations.id, users.workLocationId))
     .where(eq(users.id, userId))
     .limit(1);
 }
@@ -143,6 +172,10 @@ function toSession(row: Awaited<ReturnType<typeof queryProfile>>[number]): Sessi
   // Read on every request, so editing a role takes effect the next time its people load a page.
   // A locked role (Admin) ignores the stored list, so it can never be edited into a lockout.
   registerRole(row.role, row.roleLocked ? ADMIN_PERMISSIONS : row.rolePermissions);
+  // The chosen location only counts for someone who may work anywhere (a role change can take that away) and
+  // while it is still active (an admin may have switched it off). Otherwise the person is at their home location.
+  const chosen =
+    row.chosenLocationId && row.chosenLocationActive && canWorkAtAnyLocation(row.role) ? row.chosenLocationId : null;
   return {
     userId: row.id,
     staffId: row.staffId,
@@ -150,6 +183,7 @@ function toSession(row: Awaited<ReturnType<typeof queryProfile>>[number]): Sessi
     role: row.role,
     roleName: row.roleName,
     homeLocationId: row.homeLocationId,
+    workLocationId: chosen ?? row.homeLocationId,
   };
 }
 
@@ -167,8 +201,9 @@ export const getSession = cache(async (): Promise<Session | null> => {
       cache: "no-store",
       signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
     });
-  } catch {
+  } catch (err) {
     // Network down, DNS failure or timeout: we could not check, which is not the same as signed out.
+    logUnreachable("getSession: Supabase Auth request failed", err, `${url}/auth/v1/user`);
     throw new ServiceUnavailableError();
   }
   if (res.status >= 500) throw new ServiceUnavailableError();

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { requireSession } from "@/server/auth/session";
 import { can, canWorkAtAnyLocation } from "@/server/auth/permissions";
-import { listActiveLocations } from "@/server/services/catalog.service";
+import { listLocations } from "@/server/services/catalog.service";
 import { getLocationStock } from "@/server/services/stock.service";
 import { tableClass, tdClass, thClass } from "@/components/ui/styles";
 import { Tabs } from "@/components/ui/Tabs";
@@ -10,39 +10,39 @@ import { pageOfArray, parsePage } from "@/lib/pagination";
 import { notFound } from "next/navigation";
 import { BulkStock } from "./BulkStock";
 import { CountTab } from "./CountTab";
-import { LocationPicker } from "./LocationPicker";
 
 export const metadata = { title: "Stock here" };
 
 export default async function StockPage({
   searchParams,
 }: {
-  searchParams: Promise<{ location?: string; tab?: string; spage?: string; bpage?: string; cpage?: string }>;
+  searchParams: Promise<{ tab?: string; spage?: string; bpage?: string; cpage?: string }>;
 }) {
   const session = await requireSession();
   // Stock and stock counts share this page: each tab appears for the people allowed to use it.
   const mayView = can(session.role, "view_location_stock");
   const mayCount = can(session.role, "count_stock");
   if (!mayView && !mayCount) notFound();
-  const isSupervisor = canWorkAtAnyLocation(session.role);
-  const { location, tab, spage, bpage, cpage } = await searchParams;
-  const locations = isSupervisor ? await listActiveLocations() : [];
-  const locationId = isSupervisor && location ? location : session.homeLocationId;
+  const { tab, spage, bpage, cpage } = await searchParams;
+  // Where the person is working: set in the app bar (a supervisor's choice, or everyone else's home location).
+  const locationId = session.workLocationId;
 
   if (!locationId) {
     return (
       <p className="max-w-xl rounded-xl border border-line bg-surface p-4 text-sm">
-        Your account has no home location. Ask an admin to set one.
+        {canWorkAtAnyLocation(session.role)
+          ? "Choose where you are working, at the top of the page, to see its stock."
+          : "Your account has no home location. Ask an admin to set one."}
       </p>
     );
   }
 
   const stock = mayView ? await getLocationStock(locationId) : null;
-  const name = isSupervisor ? (locations.find((l) => l.id === locationId)?.name ?? "this location") : "your location";
+  const name = (await listLocations()).find((l) => l.id === locationId)?.name ?? "this location";
   const firstTab = stock ? "serial" : "count";
   const initialId = (tab === "count" || cpage) && mayCount ? "count" : bpage && stock ? "bulk" : firstTab;
-  // Other query values a page link has to carry along, so changing page keeps the location and the other lists' pages.
-  const keep = { location: isSupervisor ? location : undefined, spage, bpage, cpage };
+  // Other query values a page link has to carry along, so changing page keeps the other lists' pages.
+  const keep = { spage, bpage, cpage };
   const serialPage = pageOfArray(stock?.serial ?? [], parsePage(spage));
   const bulkPage = pageOfArray(stock?.quantity ?? [], parsePage(bpage));
 
@@ -56,11 +56,9 @@ export default async function StockPage({
         </p>
       </div>
 
-      {isSupervisor ? (
-        <LocationPicker value={locationId} options={locations.map((l) => ({ value: l.id, label: l.name }))} />
-      ) : null}
-
       <Tabs
+        // A new working location starts the tabs over, so no page or open count sheet belongs to the old place.
+        key={locationId}
         label="Stock"
         initialId={initialId}
         tabs={[
@@ -86,7 +84,7 @@ export default async function StockPage({
               <tr key={r.itemCode} className="relative hover:bg-black/[0.03]">
                 <td className={tdClass}>
                   <Link
-                    href={`/distribution/stock/${encodeURIComponent(r.itemCode)}${isSupervisor ? `?location=${locationId}` : ""}`}
+                    href={`/distribution/stock/${encodeURIComponent(r.itemCode)}`}
                     className="underline after:absolute after:inset-0 after:content-['']"
                   >
                     {r.itemName}

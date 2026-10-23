@@ -280,6 +280,17 @@ export async function issueFromPortal(
   return { ...result, testCode: test.code, consumables };
 }
 
+/** The units that are in stock at a location, in date, in one of the containers (any container when `shared` is null). */
+function inStockWhere(locationId: string, shared: ReturnType<typeof sharedContainers>) {
+  const day = new Date().toISOString().slice(0, 10);
+  return and(
+    eq(units.state, "IN_STOCK"),
+    eq(units.currentLocationId, locationId),
+    or(isNull(batches.expiryDate), gte(batches.expiryDate, day)),
+    shared === null ? undefined : inArray(itemTypes.containerType, shared),
+  );
+}
+
 /**
  * Up to five bottles in stock at a location that every listed test accepts, earliest expiry first (no expiry last),
  * skipping expired ones. Only a lookup: issueUnit locks and re-checks whichever one is issued. Throws a clear message
@@ -291,20 +302,12 @@ async function stockBottleCandidates(locationId: string, accepted: readonly (rea
     const sets = [...new Set(accepted.filter((s) => s.length > 0).map((s) => s.join(" or ")))];
     throw new ValidationError(`These tests need different containers (${sets.join(", ")}). Issue them in separate groups`);
   }
-  const day = new Date().toISOString().slice(0, 10);
   const rows = await db()
     .select({ serial: units.serial })
     .from(units)
     .innerJoin(batches, eq(batches.id, units.batchId))
     .innerJoin(itemTypes, eq(itemTypes.id, units.itemTypeId))
-    .where(
-      and(
-        eq(units.state, "IN_STOCK"),
-        eq(units.currentLocationId, locationId),
-        or(isNull(batches.expiryDate), gte(batches.expiryDate, day)),
-        shared === null ? undefined : inArray(itemTypes.containerType, shared),
-      ),
-    )
+    .where(inStockWhere(locationId, shared))
     .orderBy(sql`${batches.expiryDate} asc nulls last`, asc(units.createdAt), asc(units.serial))
     .limit(5);
   if (rows.length === 0) {
@@ -312,6 +315,66 @@ async function stockBottleCandidates(locationId: string, accepted: readonly (rea
     throw new ValidationError(`No ${need}bottle is in stock at your location (expired bottles are left out). Scan a bottle instead`);
   }
   return rows.map((r) => r.serial);
+}
+
+/** The containers the chosen test accepts, or (with no test in the catalog) the container of the bottle chosen from the request. */
+async function acceptedForStockRequest(input: { testCode?: string; container?: string }): Promise<string[][]> {
+  let accepted: string[][] = [];
+  if (input.testCode) {
+    const [test] = await db()
+      .select({ required: testCatalog.requiredContainerType, alternates: testCatalog.alternateContainerTypes })
+      .from(testCatalog)
+      .where(and(eq(testCatalog.code, input.testCode), eq(testCatalog.active, true)));
+    if (test) accepted = [acceptedContainers(test.required, test.alternates)];
+  }
+  const container = input.container?.trim().toUpperCase();
+  if (accepted.every((set) => set.length === 0) && container) accepted = [[container]];
+  return accepted;
+}
+
+/**
+ * The Issue page's "Issue from stock": up to five in-date bottles at the person's location that fit the test (or,
+ * with no test in the catalog, the container of the bottle chosen from the pasted request), earliest expiry first.
+ * The caller tries them in turn, because someone else may take one in the meantime.
+ */
+export async function stockBottlesForIssue(
+  input: { testCode?: string; container?: string; locationId?: string },
+  actor: Actor,
+): Promise<string[]> {
+  const accepted = await acceptedForStockRequest(input);
+  if (accepted.every((set) => set.length === 0)) {
+    // Without a container to go by, any serialized item in stock would be a candidate.
+    throw new ValidationError("Paste the request and choose the bottle first, so the right bottle is taken from stock");
+  }
+  return stockBottleCandidates(resolveWorkLocation(actor, input.locationId), accepted);
+}
+
+/**
+ * For each bottle of an "issue all" run: is there an in-date bottle in stock at the location that fits it? The same
+ * lookup as stockBottlesForIssue, but it only looks, so the page can hold the button back before anything is issued.
+ * A bottle with no container to go by counts as not available.
+ */
+export async function bottlesInStock(
+  entries: { testCode?: string; container?: string }[],
+  locationId: string | undefined,
+  actor: Actor,
+): Promise<boolean[]> {
+  const where = resolveWorkLocation(actor, locationId);
+  return Promise.all(
+    entries.map(async (entry) => {
+      const accepted = await acceptedForStockRequest(entry);
+      if (accepted.every((set) => set.length === 0)) return false;
+      const shared = sharedContainers(accepted);
+      if (shared !== null && shared.length === 0) return false;
+      const [row] = await db()
+        .select({ n: sql<number>`count(*)::int` })
+        .from(units)
+        .innerJoin(batches, eq(batches.id, units.batchId))
+        .innerJoin(itemTypes, eq(itemTypes.id, units.itemTypeId))
+        .where(inStockWhere(where, shared));
+      return (row?.n ?? 0) > 0;
+    }),
+  );
 }
 
 // --- keeping the imported investigation current from the portal page ---------------------------------
@@ -693,18 +756,23 @@ export async function locationName(locationId: string | null): Promise<string | 
   return (await homeLocation(locationId))?.name ?? null;
 }
 
-/** What the panel needs to know about whoever is signed in. */
+/**
+ * What the panel needs to know about whoever is signed in. `locationName` and `departmentOnly` describe where the
+ * person is working now (a supervisor's choice in the app bar, otherwise home), because that is where the panel issues
+ * and returns: the same working location the tracker uses, resolved from the token by the session.
+ */
 export async function describeSession(session: Session) {
-  const home = await homeLocation(session.homeLocationId);
+  const here = await homeLocation(session.workLocationId);
   return {
     name: session.name,
     staffId: session.staffId,
     role: session.role,
     homeLocationId: session.homeLocationId,
-    locationName: home?.name ?? null,
+    workLocationId: session.workLocationId,
+    locationName: here?.name ?? null,
     // A bench section or the blood bank issues for its department only, so the panel (which issues to
     // investigations) cannot be used from there; the Issue page can.
-    departmentOnly: departmentOnly(home?.serviceRole),
+    departmentOnly: departmentOnly(here?.serviceRole),
     can: {
       issue: can(session.role, "issue"),
       return: can(session.role, "return"),
