@@ -90,7 +90,7 @@ const isScannerDevice = (d: UsbDeviceLike) => {
 const explainError = (err: unknown): string => {
   const raw = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
   if (/claim ?interface|unable to claim/i.test(raw)) {
-    return `The scanner was found, but another app or tab is holding it. Unplug the scanner, plug it back in, close other tabs of this site, then tap Connect scanner again. (${raw})`;
+    return `The scanner was found, but Android would not hand over its data channel. If it still fails after a replug with one tab open, send this whole message, because the part in brackets shows what the scanner is. (${raw})`;
   }
   if (/no compatible devices|NotFoundError/i.test(raw)) {
     return `No scanner was found. Check that it is plugged in and in USB serial (CDC) mode. (${raw})`;
@@ -137,7 +137,39 @@ async function openSerialSource(port: SerialPortLike): Promise<ChunkSource> {
   };
 }
 
+// A one-line list of the USB interfaces the scanner shows, so a failure on a tablet says what the scanner really is.
+const describeDevice = (d: UsbDeviceLike): string => {
+  const ifaces = d.configuration?.interfaces ?? [];
+  if (ifaces.length === 0) return `${d.vendorId.toString(16)}:${d.productId.toString(16)}, no interfaces`;
+  const list = ifaces
+    .map((i) => {
+      const a = i.alternates[0];
+      const eps = (a?.endpoints ?? []).map((e) => `${e.direction}/${e.type}`).join("+");
+      return `#${i.interfaceNumber} class ${a?.interfaceClass ?? "?"}${eps ? ` (${eps})` : ""}`;
+    })
+    .join(", ");
+  return `${d.vendorId.toString(16)}:${d.productId.toString(16)}, ${list}`;
+};
+
+// Closes and reopens the device, which drops any claim a half-finished earlier attempt left behind.
+async function resetDevice(device: UsbDeviceLike): Promise<void> {
+  await device.close().catch(() => {});
+  await device.open();
+  if (!device.configuration) await device.selectConfiguration(1);
+}
+
 async function openUsbSource(device: UsbDeviceLike): Promise<ChunkSource> {
+  try {
+    return await openUsbSourceOnce(device);
+  } catch (err) {
+    // Never leave the device open after a failure: the next attempt (or another tab) would find it half-claimed.
+    await device.close().catch(() => {});
+    const base = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    throw new Error(`${base} [scanner: ${describeDevice(device)}]`);
+  }
+}
+
+async function openUsbSourceOnce(device: UsbDeviceLike): Promise<ChunkSource> {
   if (!device.opened) await device.open();
   if (!device.configuration) await device.selectConfiguration(1);
 
@@ -156,12 +188,32 @@ async function openUsbSource(device: UsbDeviceLike): Promise<ChunkSource> {
     }
   }
   if (!data) throw new Error("This USB device has no scanner endpoint.");
-  await device.claimInterface(data.iface);
+
+  // Claim the control interface first, then the data interface (the order serial-over-USB apps use on Android).
+  // The control interface is optional. If the data interface cannot be claimed, reset the device once and try again.
+  let commClaimed = false;
+  const claimAll = async () => {
+    commClaimed = false;
+    if (comm !== null) {
+      try {
+        await device.claimInterface(comm);
+        commClaimed = true;
+      } catch {
+        /* not needed by every scanner */
+      }
+    }
+    await device.claimInterface(data.iface);
+  };
+  try {
+    await claimAll();
+  } catch {
+    await resetDevice(device);
+    await claimAll();
+  }
 
   // Some scanners only send once the "serial port" is opened (DTR and RTS raised). Harmless for the ones that do not care.
-  if (comm !== null) {
+  if (commClaimed && comm !== null) {
     try {
-      await device.claimInterface(comm);
       await device.controlTransferOut({ requestType: "class", recipient: "interface", request: 0x22, value: 0x03, index: comm });
     } catch {
       /* not needed by every scanner */
@@ -216,14 +268,19 @@ export function useSerialScanner(onScan: (value: string) => void | Promise<void>
 
     let disposed = false;
     let active: ChunkSource | null = null;
+    // True while an open is in progress, so the auto-reconnect and the Connect button never claim the scanner twice at once.
+    let opening = false;
     let flushTimer: number | undefined;
 
     async function run(open: () => Promise<ChunkSource>, attempt = 0): Promise<void> {
-      if (disposed || active) return;
+      if (disposed || active || opening) return;
+      opening = true;
       let source: ChunkSource;
       try {
         source = await open();
+        opening = false;
       } catch (err) {
+        opening = false;
         // Still held by a previous session (e.g. a hot reload), or in use by another tab: retry briefly.
         if (!disposed && attempt < OPEN_RETRIES) {
           window.setTimeout(() => void run(open, attempt + 1), 500);
