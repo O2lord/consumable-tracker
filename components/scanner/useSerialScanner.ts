@@ -64,12 +64,27 @@ export function subscribeTouch(onChange: () => void) {
 // A phone or tablet can read the scanner too, so touch screens are no longer excluded. Web Serial is used when the
 // browser has it, otherwise WebUSB.
 const serialSupported = () => getSerial() !== undefined || getUsb() !== undefined;
-// The scanner in USB serial (CDC) mode reports these USB IDs (Microchip 04D8:000A). Used so the browser's
-// device picker lists only the scanner and not every serial port or USB device.
-const SCANNER_VENDOR = 0x04d8;
-const SCANNER_PRODUCT = 0x000a;
-const SCANNER_USB_FILTERS = [{ vendorId: SCANNER_VENDOR, productId: SCANNER_PRODUCT }];
-const isScannerDevice = (d: UsbDeviceLike) => d.vendorId === SCANNER_VENDOR && d.productId === SCANNER_PRODUCT;
+// The scanner's real USB IDs are not assumed: the one the person picks is remembered and matched on later visits.
+const SAVED_KEY = "scanner-usb-id";
+const readSavedScanner = (): { v: number; p: number } | null => {
+  try {
+    const raw = window.localStorage.getItem(SAVED_KEY);
+    return raw ? (JSON.parse(raw) as { v: number; p: number }) : null;
+  } catch {
+    return null;
+  }
+};
+const saveScanner = (d: UsbDeviceLike) => {
+  try {
+    window.localStorage.setItem(SAVED_KEY, JSON.stringify({ v: d.vendorId, p: d.productId }));
+  } catch {
+    /* storage can be blocked */
+  }
+};
+const isScannerDevice = (d: UsbDeviceLike) => {
+  const saved = readSavedScanner();
+  return !!saved && d.vendorId === saved.v && d.productId === saved.p;
+};
 
 // If a scanner is set to send no terminator, a code that has stopped arriving for this long is complete.
 const IDLE_FLUSH_MS = 120;
@@ -179,8 +194,11 @@ export function useSerialScanner(onScan: (value: string) => void | Promise<void>
   const connectRef = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
-    const serial = getSerial();
-    const usb = serial ? undefined : getUsb();
+    // On a phone or tablet, Chrome's Web Serial picker often lists nothing for this scanner while WebUSB sees it
+    // (the label printer picker does), so touch screens read it through WebUSB first.
+    const usbApi = getUsb();
+    const serial = isTouchScreen() && usbApi ? undefined : getSerial();
+    const usb = serial ? undefined : usbApi;
     if (!serial && !usb) return;
 
     let disposed = false;
@@ -282,7 +300,8 @@ export function useSerialScanner(onScan: (value: string) => void | Promise<void>
           void run(openSerial(port));
         } else if (usb) {
           const paired = (await usb.getDevices()).find(isScannerDevice);
-          const device = paired ?? (await usb.requestDevice({ filters: SCANNER_USB_FILTERS }));
+          const device = paired ?? (await usb.requestDevice({ filters: [] }));
+          saveScanner(device);
           void run(openUsb(device));
         }
       } catch (err) {
