@@ -5,16 +5,18 @@ import { DomainError } from "@/server/domain/errors";
 import { printLabels, renderPdf, renderTspl, renderTsplPreview, renderZpl, type LabelTarget } from "@/server/services/labels.service";
 import { TURNS, type PdfOptions, type Turn } from "@/lib/label-pdf";
 
-// GET  /api/labels?batch=BT...|serial=CT...|delivery=DV...&format=pdf|zpl|tspl|preview[&layout=label|a4]&only=...][&pick=1,3,5-7]  -> file
-// POST /api/labels  { batch } or { serial } or { delivery }, with optional { only }                       -> prints (USB queue as TSPL, or network Zebra as ZPL)
+// GET  /api/labels?batch=BT...|carton=CN...|serial=CT...|delivery=DV...&format=pdf|zpl|tspl|preview[&layout=label|a4]&only=...][&pick=1,3,5-7]  -> file
+// POST /api/labels  { batch } or { carton } or { serial } or { delivery }, with optional { only }          -> prints (USB queue as TSPL, or network Zebra as ZPL)
 //
 // `only` narrows a delivery to its own label (delivery) or its batch labels (batches), and a batch to its own
-// label (batch) or the pack, roll or bottle labels under it (items). Leave it out for everything together.
+// label (batch) or the carton, pack, roll or bottle labels under it (items). Leave it out for everything together.
+// A carton gives its own label and the packs and bottles in it. A serial can also be a carton or pack code (CN, PK).
 
 async function authorize() {
   const session = await getSession();
   if (!session) return { error: NextResponse.json({ error: "Sign in first" }, { status: 401 }) };
-  if (!can(session.role, "stock_in") && !can(session.role, "view_location_stock")) {
+  // Whoever records a conversion prints the label for what it made, so that permission is enough too.
+  if (!can(session.role, "stock_in") && !can(session.role, "view_location_stock") && !can(session.role, "record_conversion")) {
     return { error: NextResponse.json({ error: "You are not allowed to print labels" }, { status: 403 }) };
   }
   return { session };
@@ -25,12 +27,26 @@ function targetFrom(
   serial: unknown,
   delivery: unknown,
   only: unknown,
+  carton?: unknown,
+  pack?: unknown,
 ): LabelTarget | { error: string } | null {
   const scope = typeof only === "string" && only ? only : undefined;
+  if (typeof carton === "string" && carton) {
+    if (scope === undefined) return { carton };
+    if (scope === "carton" || scope === "packs" || scope === "bottles") return { carton, only: scope };
+    return { error: "For a carton, only must be carton, packs or bottles" };
+  }
+  if (typeof pack === "string" && pack) {
+    if (scope === undefined) return { pack };
+    if (scope === "pack" || scope === "bottles") return { pack, only: scope };
+    return { error: "For a pack, only must be pack or bottles" };
+  }
   if (typeof batch === "string" && batch) {
     if (scope === undefined) return { batch };
-    if (scope === "batch" || scope === "items") return { batch, only: scope };
-    return { error: "For a batch, only must be batch or items" };
+    if (scope === "batch" || scope === "items" || scope === "cartons" || scope === "packs" || scope === "bottles") {
+      return { batch, only: scope };
+    }
+    return { error: "For a batch, only must be batch, cartons, packs, bottles or items" };
   }
   if (typeof serial === "string" && serial) return { serial };
   if (typeof delivery === "string" && delivery) {
@@ -101,8 +117,8 @@ export async function GET(request: NextRequest) {
   if (auth.error) return auth.error;
 
   const params = request.nextUrl.searchParams;
-  const target = targetFrom(params.get("batch"), params.get("serial"), params.get("delivery"), params.get("only"));
-  if (!target) return NextResponse.json({ error: "Give a batch, a serial or a delivery" }, { status: 400 });
+  const target = targetFrom(params.get("batch"), params.get("serial"), params.get("delivery"), params.get("only"), params.get("carton"), params.get("pack"));
+  if (!target) return NextResponse.json({ error: "Give a batch, a carton, a pack, a serial or a delivery" }, { status: 400 });
   if ("error" in target) return NextResponse.json({ error: target.error }, { status: 400 });
 
   const format = params.get("format") ?? "pdf";
@@ -158,13 +174,15 @@ export async function POST(request: NextRequest) {
 
   const body = (await request.json().catch(() => ({}))) as {
     batch?: unknown;
+    carton?: unknown;
+    pack?: unknown;
     serial?: unknown;
     delivery?: unknown;
     only?: unknown;
     pick?: unknown;
   };
-  const target = targetFrom(body.batch, body.serial, body.delivery, body.only);
-  if (!target) return NextResponse.json({ error: "Give a batch, a serial or a delivery" }, { status: 400 });
+  const target = targetFrom(body.batch, body.serial, body.delivery, body.only, body.carton, body.pack);
+  if (!target) return NextResponse.json({ error: "Give a batch, a carton, a pack, a serial or a delivery" }, { status: 400 });
   if ("error" in target) return NextResponse.json({ error: target.error }, { status: 400 });
   const pick = parsePick(body.pick);
   if (pick && !Array.isArray(pick)) return NextResponse.json({ error: pick.error }, { status: 400 });

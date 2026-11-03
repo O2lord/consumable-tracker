@@ -12,18 +12,21 @@ import {
 import { isUniqueViolation } from "../db/errors";
 import {
   batches,
+  cartons,
   itemTypes,
   locations,
   packs,
   stockRequests,
   transferBatchParts,
+  transferCartonParts,
   transferItemPacks,
   transferItems,
+  transferPackParts,
   transfers,
   units,
   users,
 } from "../db/schema";
-import { InvalidSerialError, NotFoundError, ValidationError } from "../domain/errors";
+import { DomainError, InvalidSerialError, NotFoundError, ValidationError } from "../domain/errors";
 import {
   assertCanDispatchPieces,
   assertCanDispatchQuantity,
@@ -37,6 +40,7 @@ import {
   generateTransferCode,
   isValidBatchCode,
   normalizeCode,
+  parseCartonCode,
   parsePackCode,
   parseSerial,
   parseTransferCode,
@@ -203,10 +207,13 @@ export async function addUnitToTransfer(
   serialInput: string,
   conn: DbOrTx = db(),
   expectedBatchCode?: string,
+  expectedPackCode?: string,
 ): Promise<AddUnitResult> {
   const serial = parseSerial(serialInput);
   if (!serial) throw new InvalidSerialError(serialInput);
   const expectedBatch = expectedBatchCode ? normalizeCode(expectedBatchCode) : null;
+  // Set when the store keeper chose "send bottles from this pack": a bottle from anywhere else is rejected.
+  const expectedPack = expectedPackCode ? normalizeCode(expectedPackCode) : null;
 
   return conn.transaction(async (tx) => {
     const transfer = await lockTransfer(tx, transferId);
@@ -225,15 +232,22 @@ export async function addUnitToTransfer(
         itemName: itemTypes.name,
         expiryDate: batches.expiryDate,
         batchCode: batches.code,
+        packCode: packs.code,
       })
       .from(units)
       .innerJoin(batches, eq(batches.id, units.batchId))
       .innerJoin(itemTypes, eq(itemTypes.id, units.itemTypeId))
+      .leftJoin(packs, eq(packs.id, units.packId))
       .where(eq(units.serial, serial));
     if (!unit) throw new ValidationError(`${serial} is not in the system`);
     if (expectedBatch && unit.batchCode !== expectedBatch) {
       throw new ValidationError(
         `${serial} is from batch ${unit.batchCode}, not the box you scanned (${expectedBatch}). Put it back, or scan its own box code first`,
+      );
+    }
+    if (expectedPack && unit.packCode !== expectedPack) {
+      throw new ValidationError(
+        `${serial} is not from pack ${expectedPack}${unit.packCode ? ` (it is from pack ${unit.packCode})` : ""}. Put it back, or scan its own pack label first`,
       );
     }
 
@@ -577,6 +591,477 @@ export async function removePackFromDraft(transferId: string, packInput: string,
   });
 }
 
+// --- whole cartons, and whole packs of bottles -------------------------------------------------
+//
+// Bottles and packs are already linked to the carton they arrived in (units.carton_id, units.pack_id, packs.carton_id).
+// Sending a whole carton or a whole pack of bottles puts each of its bottles (or each of its packs) on the draft as the
+// same rows a one-by-one scan would, so dispatch, undo and receiving do not need to know a carton was involved.
+
+type TransferRow = typeof transfers.$inferSelect;
+
+/** What one carton, or one pack of bottles, holds as seen from a draft's sending store. */
+interface GroupStats {
+  total: number;
+  /** Still in stock at the sending store (on this draft or not). */
+  here: number;
+  /** Here, and not on a different open transfer. */
+  free: number;
+  /** Already on THIS draft. */
+  onDraft: number;
+  /** Different packs the bottles sit in (bottles only). */
+  packLabels: number;
+}
+
+async function bottleGroupStats(
+  conn: DbOrTx,
+  transfer: TransferRow,
+  by: { cartonId: string } | { packId: string },
+): Promise<GroupStats> {
+  const member = "cartonId" in by ? sql`u.carton_id = ${by.cartonId}::uuid` : sql`u.pack_id = ${by.packId}::uuid`;
+  const rows = await conn.execute<{ total: number; here: number; free: number; on_draft: number; pack_labels: number }>(sql`
+    select count(*)::int as total,
+           (count(*) filter (where u.state = 'IN_STOCK' and u.current_location_id = ${transfer.fromLocationId}::uuid))::int as here,
+           (count(*) filter (
+              where u.state = 'IN_STOCK' and u.current_location_id = ${transfer.fromLocationId}::uuid
+                and not exists (
+                  select 1 from consumables.transfer_items ti
+                  where ti.unit_id = u.id and ti.open and ti.transfer_id <> ${transfer.id}::uuid
+                )
+           ))::int as free,
+           (count(*) filter (
+              where exists (
+                select 1 from consumables.transfer_items ti
+                where ti.unit_id = u.id and ti.open and ti.transfer_id = ${transfer.id}::uuid
+              )
+           ))::int as on_draft,
+           count(distinct u.pack_id)::int as pack_labels
+    from consumables.units u
+    where ${member}
+  `);
+  const r = rows[0];
+  return { total: r?.total ?? 0, here: r?.here ?? 0, free: r?.free ?? 0, onDraft: r?.on_draft ?? 0, packLabels: r?.pack_labels ?? 0 };
+}
+
+/** The same numbers for the sealed packs of a carton (bulk items). A pack that was opened for pieces no longer counts. */
+async function sealedPackStats(conn: DbOrTx, transfer: TransferRow, cartonId: string): Promise<GroupStats> {
+  const rows = await conn.execute<{ total: number; here: number; free: number; on_draft: number }>(sql`
+    select count(*)::int as total,
+           (count(*) filter (
+              where p.location_id = ${transfer.fromLocationId}::uuid and p.pieces_remaining = p.pieces_per_pack
+           ))::int as here,
+           (count(*) filter (
+              where p.location_id = ${transfer.fromLocationId}::uuid and p.pieces_remaining = p.pieces_per_pack
+                and not exists (
+                  select 1 from consumables.transfer_item_packs tip
+                  join consumables.transfer_items ti on ti.id = tip.transfer_item_id
+                  where tip.pack_id = p.id and tip.open and ti.transfer_id <> ${transfer.id}::uuid
+                )
+           ))::int as free,
+           (count(*) filter (
+              where exists (
+                select 1 from consumables.transfer_item_packs tip
+                join consumables.transfer_items ti on ti.id = tip.transfer_item_id
+                where tip.pack_id = p.id and tip.open and ti.transfer_id = ${transfer.id}::uuid
+              )
+           ))::int as on_draft
+    from consumables.packs p
+    where p.carton_id = ${cartonId}::uuid
+  `);
+  const r = rows[0];
+  return { total: r?.total ?? 0, here: r?.here ?? 0, free: r?.free ?? 0, onDraft: r?.on_draft ?? 0, packLabels: r?.total ?? 0 };
+}
+
+async function buildCartonInfo(
+  conn: DbOrTx,
+  transfer: TransferRow,
+  carton: typeof cartons.$inferSelect,
+  trackingMode: "SERIAL" | "QUANTITY",
+): Promise<DispatchCartonInfo> {
+  const [partRow] = await conn
+    .select({ n: sql<number>`count(*)::int` })
+    .from(transferCartonParts)
+    .where(eq(transferCartonParts.cartonId, carton.id));
+  const partsSent = partRow?.n ?? 0;
+  if (trackingMode === "SERIAL") {
+    const s = await bottleGroupStats(conn, transfer, { cartonId: carton.id });
+    // A pack of bottles counts as on the draft once every bottle in it is.
+    const rows = await conn.execute<{ n: number }>(sql`
+      select count(*)::int as n from (
+        select u.pack_id from consumables.units u
+        where u.carton_id = ${carton.id}::uuid and u.pack_id is not null
+        group by u.pack_id
+        having bool_and(exists (
+          select 1 from consumables.transfer_items ti
+          where ti.unit_id = u.id and ti.open and ti.transfer_id = ${transfer.id}::uuid
+        ))
+      ) x
+    `);
+    return {
+      code: carton.code,
+      contents: "bottles",
+      total: s.total,
+      avail: s.free,
+      onDraft: s.onDraft,
+      packLabels: s.packLabels,
+      packsTotal: s.packLabels,
+      packsOnDraft: rows[0]?.n ?? 0,
+      intact: s.total > 0 && s.free === s.total,
+      partsSent,
+    };
+  }
+  const s = await sealedPackStats(conn, transfer, carton.id);
+  return {
+    code: carton.code,
+    contents: "packs",
+    total: s.total,
+    avail: s.free,
+    onDraft: s.onDraft,
+    packLabels: s.total,
+    packsTotal: s.total,
+    packsOnDraft: s.onDraft,
+    intact: s.total > 0 && s.free === s.total,
+    partsSent,
+  };
+}
+
+/** How many of a batch's cartons are completely on this draft (every bottle, or every pack, in them). */
+async function countCartonsOnDraft(
+  conn: DbOrTx,
+  transfer: TransferRow,
+  batchId: string,
+  trackingMode: "SERIAL" | "QUANTITY",
+): Promise<number> {
+  const rows =
+    trackingMode === "SERIAL"
+      ? await conn.execute<{ n: number }>(sql`
+          select count(*)::int as n from (
+            select u.carton_id from consumables.units u
+            where u.batch_id = ${batchId}::uuid and u.carton_id is not null
+            group by u.carton_id
+            having bool_and(exists (
+              select 1 from consumables.transfer_items ti
+              where ti.unit_id = u.id and ti.open and ti.transfer_id = ${transfer.id}::uuid
+            ))
+          ) x
+        `)
+      : await conn.execute<{ n: number }>(sql`
+          select count(*)::int as n from (
+            select p.carton_id from consumables.packs p
+            where p.batch_id = ${batchId}::uuid and p.carton_id is not null
+            group by p.carton_id
+            having bool_and(exists (
+              select 1 from consumables.transfer_item_packs tip
+              join consumables.transfer_items ti on ti.id = tip.transfer_item_id
+              where tip.pack_id = p.id and tip.open and ti.transfer_id = ${transfer.id}::uuid
+            ))
+          ) x
+        `);
+  return rows[0]?.n ?? 0;
+}
+
+export interface AddGroupResult {
+  code: string;
+  batchCode: string;
+  itemName: string;
+  contents: "bottles" | "packs";
+  /** Bottles or packs this call newly put on the draft (ones already there are skipped). */
+  added: number;
+  /** Everything the carton or pack holds. */
+  total: number;
+  counts: DraftCounts;
+}
+
+/**
+ * Puts every bottle of one carton or one pack on the draft. All or nothing: the group has to be complete (every
+ * bottle still in stock here and not on another transfer), otherwise it was opened and must go a pack or a bottle at a
+ * time. Bottles already on this draft are left as they are.
+ */
+async function addBottlesOfGroup(
+  tx: Tx,
+  transfer: TransferRow,
+  by: { cartonId: string } | { packId: string },
+  label: string,
+): Promise<{ added: number; total: number }> {
+  const member = "cartonId" in by ? eq(units.cartonId, by.cartonId) : eq(units.packId, by.packId);
+  // Lock the bottle rows on their own, as addUnitToTransfer does.
+  await tx.select({ id: units.id }).from(units).where(member).for("update");
+
+  const stats = await bottleGroupStats(tx, transfer, by);
+  if (stats.total === 0) throw new ValidationError(`${label} has no bottles recorded in it`);
+  if (stats.free !== stats.total) {
+    throw new ValidationError(
+      `${label} has been opened, or some of its bottles are gone or on another transfer (${stats.free} of ${stats.total} are free here). Send what is left by scanning its packs or bottles`,
+    );
+  }
+  if (stats.onDraft === stats.total) throw new ValidationError(`${label} is already on this transfer`);
+
+  const rows = await tx
+    .select({
+      id: units.id,
+      serial: units.serial,
+      state: units.state,
+      locationId: units.currentLocationId,
+      transferId: units.currentTransferId,
+      expiryDate: batches.expiryDate,
+    })
+    .from(units)
+    .innerJoin(batches, eq(batches.id, units.batchId))
+    .where(member);
+
+  const onThis = new Set<string>();
+  for (const part of chunks(rows.map((r) => r.id))) {
+    const found = await tx
+      .select({ unitId: transferItems.unitId })
+      .from(transferItems)
+      .where(and(inArray(transferItems.unitId, part), eq(transferItems.transferId, transfer.id), eq(transferItems.open, true)));
+    for (const f of found) if (f.unitId) onThis.add(f.unitId);
+  }
+  const fresh = rows.filter((r) => !onThis.has(r.id));
+
+  for (const r of fresh) {
+    try {
+      assertCanDispatchUnit(
+        { serial: r.serial, state: r.state, locationId: r.locationId, transferId: r.transferId, expiryDate: r.expiryDate },
+        transfer.fromLocationId,
+        today(),
+      );
+    } catch (err) {
+      if (err instanceof DomainError) throw new ValidationError(`${label} cannot go as a whole: ${err.message}`);
+      throw err;
+    }
+  }
+  for (const part of chunks(fresh)) {
+    await tx.insert(transferItems).values(part.map((r) => ({ transferId: transfer.id, unitId: r.id, quantityDispatched: 1 })));
+  }
+  return { added: fresh.length, total: stats.total };
+}
+
+/**
+ * Send a WHOLE carton. For bottles every bottle in it goes on the draft; for bulk items every pack in it goes on as a
+ * whole pack (each one is remembered by code, like a scanned pack). The carton has to be complete: one that has been
+ * opened, or lost bottles or packs, goes pack by pack instead.
+ */
+export async function addCartonToDraft(transferId: string, cartonInput: string, conn: DbOrTx = db()): Promise<AddGroupResult> {
+  const cartonCode = parseCartonCode(cartonInput);
+  if (!cartonCode) throw new ValidationError("That is not a valid carton code");
+
+  return conn.transaction(async (tx) => {
+    const transfer = await lockTransfer(tx, transferId);
+    assertStatus(transfer.status, ["DRAFT"], "add items");
+
+    const [carton] = await tx
+      .select({
+        id: cartons.id,
+        code: cartons.code,
+        batchId: cartons.batchId,
+        batchCode: batches.code,
+        itemName: itemTypes.name,
+        trackingMode: itemTypes.trackingMode,
+      })
+      .from(cartons)
+      .innerJoin(batches, eq(batches.id, cartons.batchId))
+      .innerJoin(itemTypes, eq(itemTypes.id, cartons.itemTypeId))
+      .where(eq(cartons.code, cartonCode));
+    if (!carton) throw new NotFoundError("Carton");
+    // Same lock order as everywhere else: batch first.
+    await tx.select({ id: batches.id }).from(batches).where(eq(batches.id, carton.batchId)).for("update");
+
+    const label = `Carton ${carton.code}`;
+    if (carton.trackingMode === "SERIAL") {
+      const r = await addBottlesOfGroup(tx, transfer, { cartonId: carton.id }, label);
+      return {
+        code: carton.code,
+        batchCode: carton.batchCode,
+        itemName: carton.itemName,
+        contents: "bottles" as const,
+        added: r.added,
+        total: r.total,
+        counts: await draftCounts(tx, transfer.id),
+      };
+    }
+
+    const stats = await sealedPackStats(tx, transfer, carton.id);
+    if (stats.total === 0) throw new ValidationError(`${label} has no pack labels, so it cannot go as a whole carton`);
+    if (stats.free !== stats.total) {
+      throw new ValidationError(
+        `${label} has been opened, or some of its packs are gone or on another transfer (${stats.free} of ${stats.total} are free here). Send its packs one by one instead`,
+      );
+    }
+    if (stats.onDraft === stats.total) throw new ValidationError(`${label} is already on this transfer`);
+
+    const all = await tx.select({ code: packs.code }).from(packs).where(eq(packs.cartonId, carton.id)).orderBy(asc(packs.code));
+    const already = await tx
+      .select({ code: packs.code })
+      .from(transferItemPacks)
+      .innerJoin(packs, eq(packs.id, transferItemPacks.packId))
+      .innerJoin(transferItems, eq(transferItems.id, transferItemPacks.transferItemId))
+      .where(and(eq(packs.cartonId, carton.id), eq(transferItems.transferId, transfer.id), eq(transferItemPacks.open, true)));
+    const skip = new Set(already.map((a) => a.code));
+    let added = 0;
+    for (const p of all) {
+      if (skip.has(p.code)) continue;
+      // Each pack goes through the same checks as a single pack scan. A failure rolls the whole carton back.
+      await addPackToDraft(transfer.id, p.code, tx);
+      added += 1;
+    }
+    return {
+      code: carton.code,
+      batchCode: carton.batchCode,
+      itemName: carton.itemName,
+      contents: "packs" as const,
+      added,
+      total: stats.total,
+      counts: await draftCounts(tx, transfer.id),
+    };
+  });
+}
+
+export type WholePackResult =
+  | { kind: "packs"; result: AddPackResult; cartonCode: string | null }
+  | { kind: "bottles"; result: AddGroupResult; cartonCode: string | null };
+
+/**
+ * Send ONE WHOLE PACK. A pack of a bulk item goes on as one whole pack (addPackToDraft); a pack of bottles puts every
+ * bottle in it on the draft. `cartonCode` is the carton the pack came from, so the screen can stay on that carton.
+ */
+export async function addWholePackToDraft(transferId: string, packInput: string, conn: DbOrTx = db()): Promise<WholePackResult> {
+  const packCode = parsePackCode(packInput);
+  if (!packCode) throw new ValidationError("That is not a valid pack code");
+
+  return conn.transaction(async (tx) => {
+    const [row] = await tx
+      .select({
+        id: packs.id,
+        batchId: packs.batchId,
+        mode: itemTypes.trackingMode,
+        batchCode: batches.code,
+        itemName: itemTypes.name,
+        cartonCode: cartons.code,
+      })
+      .from(packs)
+      .innerJoin(itemTypes, eq(itemTypes.id, packs.itemTypeId))
+      .innerJoin(batches, eq(batches.id, packs.batchId))
+      .leftJoin(cartons, eq(cartons.id, packs.cartonId))
+      .where(eq(packs.code, packCode));
+    if (!row) throw new NotFoundError("Pack");
+    const cartonCode = row.cartonCode ?? null;
+
+    if (row.mode === "QUANTITY") {
+      return { kind: "packs" as const, result: await addPackToDraft(transferId, packCode, tx), cartonCode };
+    }
+
+    const transfer = await lockTransfer(tx, transferId);
+    assertStatus(transfer.status, ["DRAFT"], "add items");
+    await tx.select({ id: batches.id }).from(batches).where(eq(batches.id, row.batchId)).for("update");
+    const r = await addBottlesOfGroup(tx, transfer, { packId: row.id }, `Pack ${packCode}`);
+    return {
+      kind: "bottles" as const,
+      result: {
+        code: packCode,
+        batchCode: row.batchCode,
+        itemName: row.itemName,
+        contents: "bottles" as const,
+        added: r.added,
+        total: r.total,
+        counts: await draftCounts(tx, transfer.id),
+      },
+      cartonCode,
+    };
+  });
+}
+
+/** Undo for "send whole pack", whichever kind of pack it was. */
+export async function removeWholePackFromDraft(transferId: string, packInput: string, conn: DbOrTx = db()): Promise<DraftCounts> {
+  const packCode = parsePackCode(packInput);
+  if (!packCode) throw new ValidationError("That is not a valid pack code");
+  return conn.transaction(async (tx) => {
+    const [row] = await tx
+      .select({ id: packs.id, mode: itemTypes.trackingMode })
+      .from(packs)
+      .innerJoin(itemTypes, eq(itemTypes.id, packs.itemTypeId))
+      .where(eq(packs.code, packCode));
+    if (!row) throw new NotFoundError("Pack");
+    if (row.mode === "QUANTITY") return removePackFromDraft(transferId, packCode, tx);
+
+    const transfer = await lockTransfer(tx, transferId);
+    assertStatus(transfer.status, ["DRAFT"], "remove items");
+    const removed = await tx
+      .delete(transferItems)
+      .where(
+        and(
+          eq(transferItems.transferId, transfer.id),
+          sql`${transferItems.unitId} in (select id from consumables.units where pack_id = ${row.id}::uuid)`,
+        ),
+      )
+      .returning({ id: transferItems.id });
+    if (removed.length === 0) throw new NotFoundError("Pack on this transfer");
+    return draftCounts(tx, transfer.id);
+  });
+}
+
+/** Undo for "send whole carton": takes its bottles, or its packs, back off the draft. */
+export async function removeCartonFromDraft(transferId: string, cartonInput: string, conn: DbOrTx = db()): Promise<DraftCounts> {
+  const cartonCode = parseCartonCode(cartonInput);
+  if (!cartonCode) throw new ValidationError("That is not a valid carton code");
+  return conn.transaction(async (tx) => {
+    const [carton] = await tx
+      .select({ id: cartons.id, mode: itemTypes.trackingMode })
+      .from(cartons)
+      .innerJoin(itemTypes, eq(itemTypes.id, cartons.itemTypeId))
+      .where(eq(cartons.code, cartonCode));
+    if (!carton) throw new NotFoundError("Carton");
+
+    const transfer = await lockTransfer(tx, transferId);
+    assertStatus(transfer.status, ["DRAFT"], "remove items");
+
+    if (carton.mode === "SERIAL") {
+      const removed = await tx
+        .delete(transferItems)
+        .where(
+          and(
+            eq(transferItems.transferId, transfer.id),
+            sql`${transferItems.unitId} in (select id from consumables.units where carton_id = ${carton.id}::uuid)`,
+          ),
+        )
+        .returning({ id: transferItems.id });
+      if (removed.length === 0) throw new NotFoundError("Carton on this transfer");
+      return draftCounts(tx, transfer.id);
+    }
+
+    const linked = await tx
+      .select({ code: packs.code })
+      .from(transferItemPacks)
+      .innerJoin(packs, eq(packs.id, transferItemPacks.packId))
+      .innerJoin(transferItems, eq(transferItems.id, transferItemPacks.transferItemId))
+      .where(and(eq(packs.cartonId, carton.id), eq(transferItems.transferId, transfer.id)));
+    if (linked.length === 0) throw new NotFoundError("Carton on this transfer");
+    for (const p of linked) await removePackFromDraft(transfer.id, p.code, tx);
+    return draftCounts(tx, transfer.id);
+  });
+}
+
+/** One scanned carton on the dispatch screen. Counts are bottles, or packs for a bulk item. */
+export interface DispatchCartonInfo {
+  code: string;
+  /** What the carton is made of, for the screen's wording. */
+  contents: "bottles" | "packs";
+  /** Everything the carton held. */
+  total: number;
+  /** Still here and free to go on this draft (not on another open transfer). */
+  avail: number;
+  /** Already on THIS draft. */
+  onDraft: number;
+  /** Packs with their own label in the carton. 0 means it can only be sent whole or bottle by bottle. */
+  packLabels: number;
+  /** Packs in the carton, and how many of them are completely on THIS draft. The carton is counted in packs. */
+  packsTotal: number;
+  packsOnDraft: number;
+  /** True when nothing has left the carton, so it can go as a whole carton. */
+  intact: boolean;
+  /** How many dispatches have already taken part of this carton (its lettered parts so far). */
+  partsSent: number;
+}
+
 export interface DispatchBatchInfo {
   batchCode: string;
   itemName: string;
@@ -615,6 +1100,12 @@ export interface DispatchBatchInfo {
    * a number. Stock received before pack labels existed has none, so it is still typed.
    */
   hasPackLabels: boolean;
+  /** Cartons (CN...) this batch was received in. 0 for stock received without cartons. */
+  cartonCount: number;
+  /** Cartons of this batch that are completely on THIS draft. The batch is counted in cartons. */
+  cartonsOnDraft: number;
+  /** The carton whose label was scanned (CN...), or null when a box, pack or bottle was scanned. */
+  carton: DispatchCartonInfo | null;
 }
 
 /** One scanned pack on the dispatch screen. `piecesLeft` already excludes what other open drafts have promised. */
@@ -627,6 +1118,10 @@ export interface DispatchPackInfo {
   intact: boolean;
   /** True when the pack is already on a transfer that has not been received (this draft or another). */
   onTransfer: boolean;
+  /** Bottles of this pack already on THIS draft (bottle packs only; 0 for bulk packs). */
+  onDraft: number;
+  /** How many dispatches have already taken part of this pack (its lettered parts so far). */
+  partsSent: number;
 }
 export interface EarlierBatch {
   batchCode: string;
@@ -719,6 +1214,19 @@ export async function lookupBatchForDispatch(
   batchInput: string,
   conn: DbOrTx = db(),
 ): Promise<DispatchBatchInfo> {
+  // A carton label stands for the batch it belongs to, like a pack label does.
+  const cartonCode = parseCartonCode(batchInput);
+  let scannedCarton: typeof cartons.$inferSelect | null = null;
+  if (cartonCode) {
+    const [row] = await conn
+      .select({ carton: cartons, batchCode: batches.code })
+      .from(cartons)
+      .innerJoin(batches, eq(batches.id, cartons.batchId))
+      .where(eq(cartons.code, cartonCode));
+    if (!row) throw new NotFoundError("Carton");
+    scannedCarton = row.carton;
+    batchInput = row.batchCode;
+  }
   const packCode = parsePackCode(batchInput);
   let scannedPack: typeof packs.$inferSelect | null = null;
   if (packCode) {
@@ -786,8 +1294,6 @@ export async function lookupBatchForDispatch(
     available = holding.free.sealed;
     looseAvailable = holding.free.loose;
     piecesAvailable = holding.free.sealed * batch.packSize + holding.free.loose;
-    const [labelled] = await conn.select({ n: sql<number>`count(*)::int` }).from(packs).where(eq(packs.batchId, batch.id));
-    hasPackLabels = (labelled?.n ?? 0) > 0;
     const [line] = await conn
       .select({ q: transferItems.quantityDispatched, inPieces: transferItems.inPieces })
       .from(transferItems)
@@ -795,6 +1301,13 @@ export async function lookupBatchForDispatch(
     onDraft = line && !line.inPieces ? line.q : 0;
     onDraftPieces = line?.inPieces ? line.q : 0;
   }
+
+  // Pack labels and cartons exist for bottles as well as for bulk stock.
+  const [labelled] = await conn.select({ n: sql<number>`count(*)::int` }).from(packs).where(eq(packs.batchId, batch.id));
+  hasPackLabels = (labelled?.n ?? 0) > 0;
+  const [cartonRow] = await conn.select({ n: sql<number>`count(*)::int` }).from(cartons).where(eq(cartons.batchId, batch.id));
+  const cartonCount = cartonRow?.n ?? 0;
+  const cartonsOnDraft = cartonCount > 0 ? await countCartonsOnDraft(conn, transfer, batch.id, batch.trackingMode) : 0;
 
   const earlierBatch = await findEarlierBatch(conn, {
     transferId: transfer.id,
@@ -806,10 +1319,30 @@ export async function lookupBatchForDispatch(
     day: today(),
   });
 
+  const [packPartRow] = scannedPack
+    ? await conn
+        .select({ n: sql<number>`count(*)::int` })
+        .from(transferPackParts)
+        .where(eq(transferPackParts.packId, scannedPack.id))
+    : [];
+  const packPartsSent = packPartRow?.n ?? 0;
+  let pack: DispatchPackInfo | null = null;
+  if (scannedPack && batch.trackingMode === "SERIAL") {
+    // Bottles move on their own rows, so a pack of bottles is read from the bottles in it, not from the pack's location.
+    const s = await bottleGroupStats(conn, transfer, { packId: scannedPack.id });
+    pack = {
+      code: scannedPack.code,
+      piecesPerPack: s.total,
+      piecesRemaining: s.here,
+      piecesLeft: s.free,
+      intact: s.total > 0 && s.here === s.total,
+      onTransfer: s.free < s.here || (s.total > 0 && s.onDraft === s.total),
+      onDraft: s.onDraft,
+      partsSent: packPartsSent,
+    };
+  } else if (scannedPack && scannedPack.locationId === transfer.fromLocationId) {
     // A pack that is not at the sending location selects its batch like a box label does, and no pack is named on
     // the draft line. Pack rows follow whole-pack transfers that were scanned pack by pack; older ones did not.
-  let pack: DispatchPackInfo | null = null;
-  if (scannedPack && scannedPack.locationId === transfer.fromLocationId) {
     const promised = await piecesPromisedFromPack(conn, scannedPack.id, transfer.id);
     const [openLink] = await conn
       .select({ id: transferItemPacks.id })
@@ -822,8 +1355,12 @@ export async function lookupBatchForDispatch(
       piecesLeft: Math.max(0, scannedPack.piecesRemaining - promised),
       intact: scannedPack.piecesRemaining === scannedPack.piecesPerPack,
       onTransfer: Boolean(openLink),
+      onDraft: 0,
+      partsSent: packPartsSent,
     };
   }
+
+  const carton = scannedCarton ? await buildCartonInfo(conn, transfer, scannedCarton, batch.trackingMode) : null;
 
   return {
     batchCode: batch.code,
@@ -841,6 +1378,9 @@ export async function lookupBatchForDispatch(
     earlierBatch,
     pack,
     hasPackLabels,
+    cartonCount,
+    cartonsOnDraft,
+    carton,
   };
 }
 
@@ -855,6 +1395,27 @@ export async function removeTransferItem(transferId: string, itemId: string, con
       .returning({ id: transferItems.id });
     if (removed.length === 0) throw new NotFoundError("Item on this transfer");
     return draftCounts(tx, transfer.id);
+  });
+}
+
+/**
+ * Takes every bottle line, or every bulk line, off a draft in one go ("Remove all" on the transfer page).
+ * Pack links on bulk lines go with them (the foreign key cascades). Returns how many lines were removed.
+ */
+export async function removeAllTransferItems(
+  transferId: string,
+  scope: "bottles" | "bulk",
+  conn: DbOrTx = db(),
+): Promise<number> {
+  return conn.transaction(async (tx) => {
+    const transfer = await lockTransfer(tx, transferId);
+    assertStatus(transfer.status, ["DRAFT"], "remove items");
+    const kind = scope === "bottles" ? sql`${transferItems.unitId} is not null` : sql`${transferItems.batchId} is not null`;
+    const removed = await tx
+      .delete(transferItems)
+      .where(and(eq(transferItems.transferId, transfer.id), kind))
+      .returning({ id: transferItems.id });
+    return removed.length;
   });
 }
 
@@ -1161,6 +1722,46 @@ export async function confirmTransfer(
       parts.push({ batchCode: batch.code, letter });
     }
 
+    // Cartons and packs that this transfer only partly takes get their own lettered part the same way (a carton split
+    // by packs, a pack split by bottles). One that goes whole has no part: the level above it carries the letter.
+    const split = await splitContainers(tx, transfer.id);
+    const containerParts: DispatchedContainerPart[] = [];
+    if (split.cartonIds.length > 0) {
+      // Lock in id order first (no deadlocks), so two dispatches cannot hand out the same letter.
+      const cartonRows = await tx
+        .select({ id: cartons.id, code: cartons.code })
+        .from(cartons)
+        .where(inArray(cartons.id, split.cartonIds))
+        .orderBy(asc(cartons.id))
+        .for("update");
+      for (const carton of cartonRows) {
+        const [existing] = await tx
+          .select({ n: sql<number>`count(*)::int` })
+          .from(transferCartonParts)
+          .where(eq(transferCartonParts.cartonId, carton.id));
+        const letter = partLetter((existing?.n ?? 0) + 1);
+        await tx.insert(transferCartonParts).values({ cartonId: carton.id, transferId: transfer.id, partLetter: letter });
+        containerParts.push({ level: "carton", code: carton.code, letter });
+      }
+    }
+    if (split.packIds.length > 0) {
+      const packRows = await tx
+        .select({ id: packs.id, code: packs.code })
+        .from(packs)
+        .where(inArray(packs.id, split.packIds))
+        .orderBy(asc(packs.id))
+        .for("update");
+      for (const pack of packRows) {
+        const [existing] = await tx
+          .select({ n: sql<number>`count(*)::int` })
+          .from(transferPackParts)
+          .where(eq(transferPackParts.packId, pack.id));
+        const letter = partLetter((existing?.n ?? 0) + 1);
+        await tx.insert(transferPackParts).values({ packId: pack.id, transferId: transfer.id, partLetter: letter });
+        containerParts.push({ level: "pack", code: pack.code, letter });
+      }
+    }
+
     const [updated] = await tx
       .update(transfers)
       .set({
@@ -1172,13 +1773,20 @@ export async function confirmTransfer(
       .where(eq(transfers.id, transfer.id))
       .returning();
     if (transfer.requestId) await syncRequestFromTransfers(tx, transfer.requestId);
-    return { transfer: updated, total, pieceTotal, parts };
+    return { transfer: updated, total, pieceTotal, parts, containerParts };
   });
 }
 
 /** A batch's lettered part on a transfer, for example { batchCode: "BT7K2M9QXR4", letter: "B" }. */
 export interface DispatchedPart {
   batchCode: string;
+  letter: string;
+}
+
+/** A carton's or pack's lettered part on a transfer, for example { level: "pack", code: "PK15NT6SJMT", letter: "A" }. */
+export interface DispatchedContainerPart {
+  level: "carton" | "pack";
+  code: string;
   letter: string;
 }
 
@@ -1378,6 +1986,24 @@ export async function getTransferDetail(ref: string, conn: DbOrTx = db()) {
     .where(eq(transferBatchParts.transferId, t.id))
     .orderBy(asc(batches.code));
 
+  // Cartons and packs this transfer split, each with its lettered part. Codes and letters only, never a quantity.
+  const cartonPartRows = await conn
+    .select({ code: cartons.code, letter: transferCartonParts.partLetter })
+    .from(transferCartonParts)
+    .innerJoin(cartons, eq(cartons.id, transferCartonParts.cartonId))
+    .where(eq(transferCartonParts.transferId, t.id))
+    .orderBy(asc(cartons.code));
+  const packPartRows = await conn
+    .select({ code: packs.code, letter: transferPackParts.partLetter })
+    .from(transferPackParts)
+    .innerJoin(packs, eq(packs.id, transferPackParts.packId))
+    .where(eq(transferPackParts.transferId, t.id))
+    .orderBy(asc(packs.code));
+  const containerParts: DispatchedContainerPart[] = [
+    ...cartonPartRows.map((p) => ({ level: "carton" as const, code: p.code, letter: p.letter })),
+    ...packPartRows.map((p) => ({ level: "pack" as const, code: p.code, letter: p.letter })),
+  ];
+
   const quantityTotal = quantityItems.filter((i) => !i.inPieces).reduce((n, i) => n + i.dispatched, 0);
   const pieceTotal = quantityItems.filter((i) => i.inPieces).reduce((n, i) => n + i.dispatched, 0);
   return {
@@ -1393,6 +2019,8 @@ export async function getTransferDetail(ref: string, conn: DbOrTx = db()) {
     quantityItems,
     /** Lettered parts of each batch on this transfer. Empty while the transfer is still a draft. */
     parts,
+    /** Lettered parts of the cartons (split by packs) and packs (split by bottles) on this transfer. Empty on a draft. */
+    containerParts,
     totals: {
       serialCount: serialItems.length,
       serialReceived: serialItems.filter((i) => i.received).length,
@@ -1405,6 +2033,172 @@ export async function getTransferDetail(ref: string, conn: DbOrTx = db()) {
 }
 
 export type TransferDetail = NonNullable<Awaited<ReturnType<typeof getTransferDetail>>>;
+
+/**
+ * What a transfer holds, said in the biggest whole unit that is on it. A container counts as whole when everything in
+ * it is on the transfer (every bottle for bottle stock, every pack for bulk stock). Each level counts only what the
+ * level above did not already cover, so a whole delivery is one delivery and not its batches, cartons and packs too:
+ * delivery > batch (box) > carton > pack > bottle. `bulkPacks` is how many whole bulk packs are on the transfer, so the
+ * caller can tell them apart from bulk quantity that has no pack labels.
+ */
+export interface TransferContents {
+  deliveries: number;
+  batches: number;
+  cartons: number;
+  packs: number;
+  /** Bottles that are not part of a whole pack, carton, batch or delivery. */
+  bottles: number;
+  bulkPacks: number;
+}
+
+/**
+ * The shared first half of the container queries: which bottles and bulk packs are on the transfer, and which packs,
+ * cartons, batches and deliveries are WHOLE on it (everything in them is on it). Followed by a select by the caller.
+ * Whole bottle packs, cartons and batches are judged on every bottle that was ever in them, so one that already lost
+ * bottles on an earlier transfer is never whole.
+ */
+function wholeContainersCte(transferId: string) {
+  return sql`
+    with sent_units as (
+      select u.id, u.pack_id, u.carton_id, u.batch_id
+      from consumables.transfer_items ti
+      join consumables.units u on u.id = ti.unit_id
+      where ti.transfer_id = ${transferId}::uuid
+    ),
+    sent_packs as (
+      select p.id, p.carton_id, p.batch_id
+      from consumables.transfer_item_packs tip
+      join consumables.transfer_items ti on ti.id = tip.transfer_item_id
+      join consumables.packs p on p.id = tip.pack_id
+      where ti.transfer_id = ${transferId}::uuid and not ti.in_pieces
+    ),
+    whole_packs as (
+      select u.pack_id as id
+      from consumables.units u
+      where u.pack_id in (select pack_id from sent_units where pack_id is not null)
+      group by u.pack_id
+      having count(*) = (select count(*) from sent_units s where s.pack_id = u.pack_id)
+      union
+      select id from sent_packs
+    ),
+    pack_rows as (
+      select p.id, p.carton_id, p.batch_id from consumables.packs p where p.id in (select id from whole_packs)
+    ),
+    whole_cartons as (
+      select u.carton_id as id
+      from consumables.units u
+      where u.carton_id in (select carton_id from sent_units where carton_id is not null)
+      group by u.carton_id
+      having count(*) = (select count(*) from sent_units s where s.carton_id = u.carton_id)
+      union
+      select p.carton_id as id
+      from consumables.packs p
+      where p.carton_id in (select carton_id from sent_packs where carton_id is not null)
+      group by p.carton_id
+      having count(*) = (select count(*) from sent_packs s where s.carton_id = p.carton_id)
+    ),
+    carton_rows as (
+      select c.id, c.batch_id from consumables.cartons c where c.id in (select id from whole_cartons)
+    ),
+    whole_batches as (
+      select u.batch_id as id
+      from consumables.units u
+      where u.batch_id in (select batch_id from sent_units)
+      group by u.batch_id
+      having count(*) = (select count(*) from sent_units s where s.batch_id = u.batch_id)
+      union
+      select p.batch_id as id
+      from consumables.packs p
+      where p.batch_id in (select batch_id from sent_packs)
+      group by p.batch_id
+      having count(*) = (select count(*) from sent_packs s where s.batch_id = p.batch_id)
+    ),
+    batch_rows as (
+      select b.id, b.delivery_id from consumables.batches b where b.id in (select id from whole_batches)
+    ),
+    whole_deliveries as (
+      select b.delivery_id as id
+      from consumables.batches b
+      where b.delivery_id in (select delivery_id from batch_rows where delivery_id is not null)
+      group by b.delivery_id
+      having bool_and(b.id in (select id from whole_batches))
+    )
+  `;
+}
+
+export async function describeTransferContents(transferId: string, conn: DbOrTx = db()): Promise<TransferContents> {
+  const rows = await conn.execute<{
+    deliveries: number;
+    batches: number;
+    cartons: number;
+    packs: number;
+    bottles: number;
+    bulk_packs: number;
+  }>(sql`
+    ${wholeContainersCte(transferId)}
+    select
+      (select count(*) from whole_deliveries)::int as deliveries,
+      (select count(*) from batch_rows br
+        where br.delivery_id is null or br.delivery_id not in (select id from whole_deliveries))::int as batches,
+      (select count(*) from carton_rows cr
+        where cr.batch_id not in (select id from whole_batches))::int as cartons,
+      (select count(*) from pack_rows pr
+        where (pr.carton_id is null or pr.carton_id not in (select id from whole_cartons))
+          and pr.batch_id not in (select id from whole_batches))::int as packs,
+      (select count(*) from sent_units su
+        where (su.pack_id is null or su.pack_id not in (select id from whole_packs))
+          and (su.carton_id is null or su.carton_id not in (select id from whole_cartons))
+          and su.batch_id not in (select id from whole_batches))::int as bottles,
+      (select count(*) from sent_packs)::int as bulk_packs
+  `);
+  const r = rows[0];
+  return {
+    deliveries: r?.deliveries ?? 0,
+    batches: r?.batches ?? 0,
+    cartons: r?.cartons ?? 0,
+    packs: r?.packs ?? 0,
+    bottles: r?.bottles ?? 0,
+    bulkPacks: r?.bulk_packs ?? 0,
+  };
+}
+
+/**
+ * The cartons and packs a transfer takes only PART of: the ones that get a lettered part when it is dispatched.
+ * A pack is split when some of its bottles (or some loose pieces) go but not all of it. A carton is split when
+ * something in it goes but it is not whole on the transfer. Whole ones carry no part of their own.
+ */
+async function splitContainers(conn: DbOrTx, transferId: string): Promise<{ cartonIds: string[]; packIds: string[] }> {
+  const rows = await conn.execute<{ kind: string; id: string }>(sql`
+    ${wholeContainersCte(transferId)},
+    split_packs as (
+      select u.pack_id as id
+      from consumables.units u
+      where u.pack_id in (select pack_id from sent_units where pack_id is not null)
+      group by u.pack_id
+      having count(*) > (select count(*) from sent_units s where s.pack_id = u.pack_id)
+      union
+      select ti.pack_id as id
+      from consumables.transfer_items ti
+      where ti.transfer_id = ${transferId}::uuid and ti.in_pieces and ti.pack_id is not null
+    ),
+    touched_cartons as (
+      select carton_id as id from sent_units where carton_id is not null
+      union
+      select carton_id as id from sent_packs where carton_id is not null
+      union
+      select p.carton_id as id
+      from consumables.packs p
+      where p.id in (select id from split_packs) and p.carton_id is not null
+    )
+    select 'pack' as kind, id from split_packs
+    union all
+    select 'carton' as kind, id from touched_cartons where id not in (select id from whole_cartons)
+  `);
+  const cartonIds: string[] = [];
+  const packIds: string[] = [];
+  for (const r of rows) (r.kind === "pack" ? packIds : cartonIds).push(r.id);
+  return { cartonIds, packIds };
+}
 
 export interface BatchPartRow {
   letter: string;

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { ghostButtonClass } from "@/components/ui/styles";
 import { ScanInput, type ScanStatus } from "./ScanInput";
 import { ScanFeedback, type ScanOutcome } from "./ScanFeedback";
@@ -40,6 +41,35 @@ function ago(at: number, now: number): string {
   return new Date(at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 }
 
+// The server's message usually starts with the scanned code ("PT1QFK61C4K, Plain tube 5 mL (5 of 5)"). A history row
+// already shows the code on its own, so drop it from the message and keep the rest.
+function withoutCode(scanned: string, message: string): string {
+  const code = scanned.trim();
+  const text = message.trim();
+  if (code && text.toUpperCase().startsWith(code.toUpperCase())) {
+    const rest = text.slice(code.length).replace(/^[\s,:\-\u2013]+/, "");
+    if (rest) return rest;
+  }
+  return text;
+}
+
+function HistoryList({ entries, now }: { entries: Entry[]; now: number }) {
+  return (
+    <ul className="flex flex-col gap-1.5 text-sm">
+      {entries.map((e) => (
+        <li
+          key={e.key}
+          className={`flex flex-wrap items-center gap-x-3 gap-y-0.5 rounded-lg border-l-4 bg-page px-2.5 py-2 ${ROW_EDGE[e.result.kind]}`}
+        >
+          <span className="font-mono font-semibold">{e.scanned}</span>
+          <span className={ROW_TEXT[e.result.kind]}>{withoutCode(e.scanned, e.result.message)}</span>
+          <span className="ml-auto text-xs text-muted">{ago(e.at, now)}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 interface Props {
   label: string;
   /** Handle one scan. Throwing is treated as a failed scan, not a crash. */
@@ -53,14 +83,20 @@ interface Props {
   historySize?: number;
   /** Calmer layout: Undo sits beside the result banner and the per-scan history list is left out. */
   compact?: boolean;
+  /** Keeps the history out of the page: a "Scan history" button opens it in a popup instead of a list under the input. */
+  historyPopup?: boolean;
+  /** With `historyPopup`: draw the history button inside this element (somewhere else on the page) instead of under the input. */
+  historyContainer?: HTMLElement | null;
 }
 
 /**
  * A scanning session: always-focused input, big feedback, a short history, and optional undo of the
  * last scan. Server rejections come back as messages in the history rather than as exceptions.
  */
-export function ScanSession({ label, onScan, onUndo, onChanged, disabled = false, historySize = 8, compact = false }: Props) {
+export function ScanSession({ label, onScan, onUndo, onChanged, disabled = false, historySize = 8, compact = false, historyPopup = false, historyContainer = null }: Props) {
   const [entries, setEntries] = useState<Entry[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const historyRef = useRef<HTMLDivElement>(null);
   const [outcome, setOutcome] = useState<ScanOutcome | null>(null);
   const [nonce, setNonce] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -75,6 +111,27 @@ export function ScanSession({ label, onScan, onUndo, onChanged, disabled = false
   }, [hasEntries]);
 
   const last = entries[0];
+
+  function closeHistory() {
+    setHistoryOpen(false);
+    // The history button took focus; hand it back to the scanner input so the next scan lands there.
+    window.setTimeout(() => document.querySelector<HTMLInputElement>("input[data-autofocus]")?.focus(), 0);
+  }
+  useEffect(() => {
+    if (!historyOpen) return;
+    const onDown = (event: MouseEvent) => {
+      if (historyRef.current && !historyRef.current.contains(event.target as Node)) closeHistory();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeHistory();
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [historyOpen]);
   const canUndo = Boolean(onUndo && last?.result.undoId && last.result.kind === "ok" && !busy);
 
   function show(next: ScanOutcome) {
@@ -120,6 +177,37 @@ export function ScanSession({ label, onScan, onUndo, onChanged, disabled = false
 
   const status: ScanStatus = outcome ? (outcome.kind === "ok" || outcome.kind === "queued" ? "ok" : "error") : "idle";
 
+  const historyNode: ReactNode =
+    entries.length > 0 && historyPopup ? (
+      <div ref={historyRef} className="relative self-start">
+        <button
+          type="button"
+          onClick={() => (historyOpen ? closeHistory() : setHistoryOpen(true))}
+          aria-expanded={historyOpen}
+          className={`${ghostButtonClass} py-1`}
+        >
+          Scan history ({entries.length})
+        </button>
+        {historyOpen ? (
+          <div
+            role="dialog"
+            aria-label="Scan history"
+            className="absolute left-0 top-full z-30 mt-2 w-[min(32rem,calc(100vw-3rem))] rounded-xl border border-line bg-white p-3 shadow-lg"
+          >
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-semibold">Scan history</span>
+              <button type="button" onClick={closeHistory} className="text-sm text-muted underline">
+                Close
+              </button>
+            </div>
+            <div className="max-h-80 overflow-y-auto">
+              <HistoryList entries={entries} now={now} />
+            </div>
+          </div>
+        ) : null}
+      </div>
+    ) : null;
+
   return (
     <div className="flex flex-col gap-3">
       <ScanInput onScan={handleScan} disabled={disabled || busy} status={status} label={label} />
@@ -154,20 +242,8 @@ export function ScanSession({ label, onScan, onUndo, onChanged, disabled = false
           ) : null}
         </>
       )}
-      {entries.length > 0 && !compact ? (
-        <ul className="flex flex-col gap-1.5 text-sm">
-          {entries.map((e) => (
-            <li
-              key={e.key}
-              className={`flex flex-wrap items-center gap-x-3 gap-y-0.5 rounded-lg border-l-4 bg-page px-2.5 py-2 ${ROW_EDGE[e.result.kind]}`}
-            >
-              <span className="font-mono font-semibold">{e.scanned}</span>
-              <span className={ROW_TEXT[e.result.kind]}>{e.result.message}</span>
-              <span className="ml-auto text-xs text-muted">{ago(e.at, now)}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      {historyContainer ? (historyNode ? createPortal(historyNode, historyContainer) : null) : historyNode}
+      {entries.length > 0 && !compact && !historyPopup ? <HistoryList entries={entries} now={now} /> : null}
     </div>
   );
 }

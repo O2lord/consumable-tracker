@@ -39,7 +39,7 @@ const TONE: Record<LevelTone, string> = { bad: "#ff8a73", warn: "#f2c14e", ok: "
 export function StockHealthCard({
   health,
   scope = "bottles",
-  unit = "pieces",
+  unit = "packs",
   settings,
 }: {
   health: DashboardInsights["health"];

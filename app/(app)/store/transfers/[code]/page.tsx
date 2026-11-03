@@ -21,7 +21,7 @@ import {
 import { Tabs } from "@/components/ui/Tabs";
 import { ConfirmDispatchBar } from "./ConfirmDispatchBar";
 import { DraftBuilder } from "./DraftBuilder";
-import { cancelTransferAction, removeItemAction } from "./actions";
+import { cancelTransferAction, removeAllItemsAction, removeItemAction } from "./actions";
 
 export const metadata = { title: "Transfer" };
 
@@ -78,8 +78,10 @@ export default async function TransferPage({ params }: { params: Promise<{ code:
   const draft = t.status === "DRAFT";
   const recentCarriers = draft ? await listRecentCarriers() : [];
   const hasSlip = t.status !== "DRAFT" && t.status !== "CANCELLED";
-  // Open on the tab that has something in it, so a bottles-only transfer does not open on an empty list.
-  const firstTab = quantityItems.length === 0 && serialItems.length > 0 ? "bottles" : "bulk";
+  // Open on the tab with more in it (the same numbers the tab labels show), so a bottles-only transfer does not open
+  // on an empty list. A tie, or an empty transfer, opens on bulk.
+  const bulkCount = totals.quantityTotal + totals.pieceTotal;
+  const firstTab = totals.serialCount > bulkCount ? "bottles" : "bulk";
 
   return (
     <div className="flex flex-col gap-5">
@@ -177,16 +179,29 @@ export default async function TransferPage({ params }: { params: Promise<{ code:
           ) : null}
 
           {t.note ? <p className="text-sm">Note: {t.note}</p> : null}
-          {detail.parts.length > 0 ? (
-            <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
-              <span>Batch parts on this transfer:</span>
-              {detail.parts.map((p) => (
-                <span key={`${p.batchCode}-${p.letter}`} className={monoChipClass}>
-                  {p.batchCode} part {p.letter}
-                </span>
-              ))}
-            </div>
-          ) : null}
+          {(() => {
+            // Same rule as the slip: name only the level one step above what was sent. Bottles from a pack -> the pack's
+            // part, packs from a carton -> the carton's part, whole cartons -> the batch's part. Lowest level with parts wins.
+            const packParts = detail.containerParts.filter((p) => p.level === "pack");
+            const cartonParts = detail.containerParts.filter((p) => p.level === "carton");
+            const shown =
+              packParts.length > 0
+                ? packParts.map((p) => ({ code: p.code, letter: p.letter }))
+                : cartonParts.length > 0
+                  ? cartonParts.map((p) => ({ code: p.code, letter: p.letter }))
+                  : detail.parts.map((p) => ({ code: p.batchCode, letter: p.letter }));
+            if (shown.length === 0) return null;
+            return (
+              <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
+                <span>Parts on this transfer:</span>
+                {shown.map((p) => (
+                  <span key={`${p.code}-${p.letter}`} className={monoChipClass}>
+                    {p.code} part {p.letter}
+                  </span>
+                ))}
+              </div>
+            );
+          })()}
         </section>
       ) : null}
 
@@ -197,9 +212,25 @@ export default async function TransferPage({ params }: { params: Promise<{ code:
           {
             id: "bulk",
             label: "Bulk items",
-            count: totals.quantityTotal + totals.pieceTotal,
+            count: bulkCount,
             content: (
               <section className={`${panelClass} overflow-x-auto`}>
+                {draft && quantityItems.length > 0 ? (
+                  <div className="mb-3 flex justify-end">
+                    <ActionForm
+                      action={removeAllItemsAction}
+                      submitLabel="Remove all"
+                      compact
+                      danger
+                      className="flex gap-2"
+                      confirm="Remove all bulk items from this draft? They are released and can be scanned again."
+                    >
+                      <input type="hidden" name="transferId" value={t.id} />
+                      <input type="hidden" name="code" value={t.code} />
+                      <input type="hidden" name="scope" value="bulk" />
+                    </ActionForm>
+                  </div>
+                ) : null}
                 {quantityItems.length > 0 ? (
                   <p className="mb-2 text-sm text-muted">
                     {[
@@ -278,6 +309,22 @@ export default async function TransferPage({ params }: { params: Promise<{ code:
             count: totals.serialCount,
             content: (
               <section className={`${panelClass} overflow-x-auto`}>
+                {draft && serialItems.length > 0 ? (
+                  <div className="mb-3 flex justify-end">
+                    <ActionForm
+                      action={removeAllItemsAction}
+                      submitLabel="Remove all"
+                      compact
+                      danger
+                      className="flex gap-2"
+                      confirm={`Remove all ${totals.serialCount.toLocaleString("en-GB")} bottles from this draft? They are released and can be scanned again.`}
+                    >
+                      <input type="hidden" name="transferId" value={t.id} />
+                      <input type="hidden" name="code" value={t.code} />
+                      <input type="hidden" name="scope" value="bottles" />
+                    </ActionForm>
+                  </div>
+                ) : null}
                 {!draft && t.status !== "CANCELLED" && serialItems.length > 0 ? (
                   <p className="mb-2 text-sm text-muted">{totals.serialReceived} received</p>
                 ) : null}

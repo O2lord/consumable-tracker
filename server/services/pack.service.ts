@@ -9,32 +9,54 @@ import { generatePackCode } from "../../lib/serial";
 
 const PACK_CHUNK = 1000;
 
+export interface PackRef {
+  id: string;
+  code: string;
+}
+
 /**
- * Makes one pack row per pack for a QUANTITY batch received in packs or rolls, each starting full.
- * `piecesPerPack` is the item's pack size (1 for a roll or a pack with no size set). Returns the new codes in order.
+ * Makes one pack row per pack for a batch received in packs or rolls (or a batch of bottles received in packs), each
+ * starting full. `piecesPerPack` is the item's pack size (1 for a roll or a pack with no size set). `cartonIdOf` says
+ * which carton the pack at a given position (0-based) came in, or null for a pack received with no carton.
+ * Returns the new packs in creation order.
  */
 export async function createPacksForBatch(
   tx: DbOrTx,
-  input: { batchId: string; itemTypeId: string; locationId: string; count: number; piecesPerPack: number },
-): Promise<string[]> {
+  input: {
+    batchId: string;
+    itemTypeId: string;
+    locationId: string;
+    count: number;
+    piecesPerPack: number;
+    cartonIdOf?: (index: number) => string | null;
+  },
+): Promise<PackRef[]> {
   const piecesPerPack = Math.max(1, Math.trunc(input.piecesPerPack));
   const codeSet = new Set<string>();
   while (codeSet.size < input.count) codeSet.add(generatePackCode());
   const codes = [...codeSet];
 
+  const made: PackRef[] = [];
   for (let i = 0; i < codes.length; i += PACK_CHUNK) {
-    await tx.insert(packs).values(
-      codes.slice(i, i + PACK_CHUNK).map((code) => ({
-        code,
-        batchId: input.batchId,
-        itemTypeId: input.itemTypeId,
-        locationId: input.locationId,
-        piecesPerPack,
-        piecesRemaining: piecesPerPack,
-      })),
-    );
+    const slice = codes.slice(i, i + PACK_CHUNK);
+    const rows = await tx
+      .insert(packs)
+      .values(
+        slice.map((code, j) => ({
+          code,
+          batchId: input.batchId,
+          itemTypeId: input.itemTypeId,
+          locationId: input.locationId,
+          piecesPerPack,
+          piecesRemaining: piecesPerPack,
+          cartonId: input.cartonIdOf?.(i + j) ?? null,
+        })),
+      )
+      .returning({ id: packs.id, code: packs.code });
+    const byCode = new Map(rows.map((r) => [r.code, r] as const));
+    for (const code of slice) made.push(byCode.get(code)!);
   }
-  return codes;
+  return made;
 }
 
 /**

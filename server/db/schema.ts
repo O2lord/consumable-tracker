@@ -15,6 +15,7 @@ import {
 import {
   BATCH_SOURCES,
   COLLECTOR_TYPES,
+  CONVERSION_DIRECTIONS,
   EVENT_TYPES,
   EXTERNAL_SYSTEMS,
   IMPORT_KINDS,
@@ -126,6 +127,9 @@ export const itemTypes = consumables.table("item_types", {
   name: text("name").notNull(),
   category: text("category").notNull(),
   trackingMode: trackingMode("tracking_mode").notNull(),
+  // The first two characters of this item's bottle serials (PT, ED...), so a label says what the bottle is. Serial
+  // items only; set when bottles are first made if an admin has not. Mirrors 20261027000100_item_label_codes.sql.
+  labelCode: text("label_code").unique(),
   containerType: text("container_type"),
   unitOfMeasure: text("unit_of_measure").notNull().default("each"),
   reorderLevel: integer("reorder_level").notNull().default(0),
@@ -134,6 +138,13 @@ export const itemTypes = consumables.table("item_types", {
   // Display only: the ledger counts in the stock unit and never converts (C3).
   packSize: integer("pack_size").notNull().default(1),
   packSizeConfirmed: boolean("pack_size_confirmed").notNull().default(false),
+  // Packs (bags, rolls, bottles) in one carton as delivered. Null when the item has no carton size. With pack_size it
+  // lets a delivery be counted in cartons. Mirrors 20261026000100_cartons.sql.
+  packsPerCarton: integer("packs_per_carton"),
+  // Reagents: how many tests one container covers (100 litres of formalin = 100 tests). Null means the item is not
+  // counted in tests. When set, pack_size is kept equal to it, so a container opened at the bench adds that many
+  // loose pieces (one piece is one test). Mirrors 20261028000200_tests_per_unit.sql.
+  testsPerUnit: integer("tests_per_unit"),
   // Display only: items that must be kept in the fridge show a "Keep cold" tag (C9). Blocks nothing.
   coldStorage: boolean("cold_storage").notNull().default(false),
   // A shared bench supply (cotton wool, gloves, markers...): sent to the lab with a transfer, then taken off the
@@ -195,6 +206,38 @@ export const batches = consumables.table(
   (t) => [index("batches_item_type_idx").on(t.itemTypeId)],
 );
 
+/**
+ * One physical carton with its own barcode (CN...), received as part of a batch (one item line of a delivery).
+ * Identity and containment only, like packs: the batch ledger is the only authority on quantity. The packs and bottles
+ * inside point back here (packs.carton_id, units.carton_id). Mirrors 20261026000100_cartons.sql.
+ */
+export const cartons = consumables.table(
+  "cartons",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    code: text("code").notNull().unique(),
+    batchId: uuid("batch_id")
+      .notNull()
+      .references(() => batches.id),
+    itemTypeId: uuid("item_type_id")
+      .notNull()
+      .references(() => itemTypes.id),
+    deliveryId: uuid("delivery_id").references(() => deliveries.id),
+    locationId: uuid("location_id")
+      .notNull()
+      .references(() => locations.id),
+    // What the carton held when received: packs, or the items themselves when the item has no pack level.
+    packsCount: integer("packs_count").notNull(),
+    piecesCount: integer("pieces_count").notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("cartons_batch_idx").on(t.batchId),
+    index("cartons_location_idx").on(t.locationId),
+  ],
+);
+
 export const transfers = consumables.table(
   "transfers",
   {
@@ -247,6 +290,10 @@ export const units = consumables.table(
       .notNull()
       .references(() => locations.id),
     currentTransferId: uuid("current_transfer_id").references(() => transfers.id),
+    // The pack and carton this bottle was received in. Null for a bottle received loose (by the piece) or before
+    // cartons existed. The foreign key to packs is in SQL only (packs is defined below).
+    packId: uuid("pack_id"),
+    cartonId: uuid("carton_id").references(() => cartons.id),
     createdAt,
     updatedAt,
   },
@@ -278,6 +325,12 @@ export const packs = consumables.table(
       .references(() => locations.id),
     piecesPerPack: integer("pieces_per_pack").notNull(),
     piecesRemaining: integer("pieces_remaining").notNull(),
+    // The carton this pack was received in. Null for a pack received loose or before cartons existed.
+    cartonId: uuid("carton_id").references(() => cartons.id),
+    // When this pack's label was last printed (PDF or printer job; the preview does not count) and how many times.
+    // Null means never printed. Mirrors 20261027000200_pack_label_printed.sql.
+    labelPrintedAt: timestamp("label_printed_at", { withTimezone: true }),
+    labelPrintCount: integer("label_print_count").notNull().default(0),
     createdAt,
     updatedAt,
   },
@@ -402,6 +455,41 @@ export const transferBatchParts = consumables.table(
     createdAt,
   },
   (t) => [index("transfer_batch_parts_transfer_idx").on(t.transferId)],
+);
+
+// The same, one level down: a carton's part is assigned when a transfer takes some of its packs but not all of it, and
+// a pack's part when a transfer takes some of its bottles (or pieces) but not all of it. One that goes whole has no
+// part. The unique constraints live in the SQL migration only (20261028000100_carton_pack_parts.sql).
+export const transferCartonParts = consumables.table(
+  "transfer_carton_parts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    cartonId: uuid("carton_id")
+      .notNull()
+      .references(() => cartons.id),
+    transferId: uuid("transfer_id")
+      .notNull()
+      .references(() => transfers.id),
+    partLetter: text("part_letter").notNull(),
+    createdAt,
+  },
+  (t) => [index("transfer_carton_parts_transfer_idx").on(t.transferId)],
+);
+
+export const transferPackParts = consumables.table(
+  "transfer_pack_parts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    packId: uuid("pack_id")
+      .notNull()
+      .references(() => packs.id),
+    transferId: uuid("transfer_id")
+      .notNull()
+      .references(() => transfers.id),
+    partLetter: text("part_letter").notNull(),
+    createdAt,
+  },
+  (t) => [index("transfer_pack_parts_transfer_idx").on(t.transferId)],
 );
 
 // --- Phase 3 ---------------------------------------------------------------
@@ -688,4 +776,97 @@ export const stockCountLines = consumables.table(
     updatedAt,
   },
   (t) => [index("stock_count_lines_count_idx").on(t.countId), index("stock_count_lines_batch_idx").on(t.batchId)],
+);
+
+// --- Lab conversions ---------------------------------------------------------------
+// Mirrors 20261103000100_conversions.sql. A conversion takes stock off a location's shelf (CONVERTED_OUT) and puts a
+// different item on it (CONVERTED_IN, against a new batch). The ledger events are the only authority on quantity.
+
+/**
+ * What an admin defines once: input item, output item, a fixed ratio and a shelf life. input_amount : output_amount is
+ * counted in the measure each item has at the bench (loose pieces for a pack item or a reagent counted in tests,
+ * otherwise the item's own unit), so 1 : 10 means 1 mL of concentrate makes 10 mL of the working solution.
+ */
+export const conversionRecipes = consumables.table(
+  "conversion_recipes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    code: text("code").notNull().unique(),
+    name: text("name").notNull(),
+    inputItemTypeId: uuid("input_item_type_id")
+      .notNull()
+      .references(() => itemTypes.id),
+    outputItemTypeId: uuid("output_item_type_id")
+      .notNull()
+      .references(() => itemTypes.id),
+    inputAmount: integer("input_amount").notNull(),
+    outputAmount: integer("output_amount").notNull(),
+    // The word shown beside the amounts ("mL"). Display only. Mirrors 20261103000200_conversion_recipe_measure.sql.
+    measureLabel: text("measure_label").notNull().default("pieces"),
+    // Days from the day of conversion until the output expires. Null means the output does not expire.
+    shelfLifeDays: integer("shelf_life_days"),
+    active: boolean("active").notNull().default(true),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [index("conversion_recipes_input_idx").on(t.inputItemTypeId)],
+);
+
+/** One conversion: who did it, where, when and by which recipe. The stock it moved is in conversion_lines. */
+export const conversions = consumables.table(
+  "conversions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    code: text("code").notNull().unique(),
+    recipeId: uuid("recipe_id")
+      .notNull()
+      .references(() => conversionRecipes.id),
+    locationId: uuid("location_id")
+      .notNull()
+      .references(() => locations.id),
+    convertedBy: uuid("converted_by")
+      .notNull()
+      .references(() => users.id),
+    convertedAt: timestamp("converted_at", { withTimezone: true }).notNull().defaultNow(),
+    note: text("note"),
+    // Set together when the conversion is voided (20261103000300_conversion_void.sql). The stock is put back by new
+    // ledger events; the conversion row stays so the history is complete.
+    voidedAt: timestamp("voided_at", { withTimezone: true }),
+    voidedBy: uuid("voided_by").references(() => users.id),
+    voidReason: text("void_reason"),
+    createdAt,
+  },
+  (t) => [index("conversions_location_idx").on(t.locationId, t.convertedAt), index("conversions_recipe_idx").on(t.recipeId)],
+);
+
+/** The batches a conversion took (INPUT, one per batch drawn) and the batch it made (OUTPUT), each with its ledger event. */
+export const conversionLines = consumables.table(
+  "conversion_lines",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    conversionId: uuid("conversion_id")
+      .notNull()
+      .references(() => conversions.id),
+    direction: text("direction", { enum: CONVERSION_DIRECTIONS }).notNull(),
+    itemTypeId: uuid("item_type_id")
+      .notNull()
+      .references(() => itemTypes.id),
+    batchId: uuid("batch_id")
+      .notNull()
+      .references(() => batches.id),
+    // In loose pieces when `inPieces`, otherwise in the item's own unit.
+    quantity: integer("quantity").notNull(),
+    inPieces: boolean("in_pieces").notNull().default(false),
+    // The CONVERTED_OUT (INPUT) or CONVERTED_IN (OUTPUT) event that moved the stock.
+    eventId: uuid("event_id")
+      .notNull()
+      .unique()
+      .references(() => events.id),
+    // The CONVERTED_OUT_VOIDED / CONVERTED_IN_VOIDED event that undid this line, once the conversion is voided.
+    voidEventId: uuid("void_event_id")
+      .unique()
+      .references(() => events.id),
+    createdAt,
+  },
+  (t) => [index("conversion_lines_conversion_idx").on(t.conversionId), index("conversion_lines_batch_idx").on(t.batchId)],
 );

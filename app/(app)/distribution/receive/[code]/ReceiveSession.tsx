@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ActionForm } from "@/components/forms/ActionForm";
 import { ScanSession } from "@/components/scanner/ScanSession";
@@ -66,6 +67,8 @@ export function ReceiveSession({
   quantityLines,
 }: Props) {
   const router = useRouter();
+  // Where the "Scan history" button is drawn: under the progress ring, at the bottom of that column.
+  const [historySlot, setHistorySlot] = useState<HTMLDivElement | null>(null);
   const sync = useSyncState();
 
   // Lines sent pack by pack are received by scanning each pack in, so only the others need a typed count.
@@ -94,8 +97,11 @@ export function ReceiveSession({
       {serialExpected > 0 || packsOnSlip ? (
         <section className={`flex flex-col gap-3 ${cardClass}`}>
           <h2 className="font-semibold">Scan what arrived</h2>
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-            {serialExpected > 0 ? <ProgressRing value={shownScanned} total={serialExpected} /> : null}
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-stretch">
+            <div className="flex flex-col justify-between gap-3">
+              {serialExpected > 0 ? <ProgressRing value={shownScanned} total={serialExpected} /> : <div />}
+              <div ref={setHistorySlot} />
+            </div>
             <div className="flex min-w-0 flex-1 flex-col gap-2">
               {waitingHere.length > 0 ? (
                 <p className="text-sm text-brand">
@@ -103,6 +109,8 @@ export function ReceiveSession({
                 </p>
               ) : null}
               <ScanSession
+                historyPopup
+                historyContainer={historySlot}
                 label={scanLabel}
                 onScan={(value) =>
                   // Pack and roll labels are checked on the server straight away; bottles are saved on this device first.

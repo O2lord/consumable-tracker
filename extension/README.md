@@ -39,7 +39,7 @@ Use **Chrome or Edge**. Safari and Firefox cannot read a scanner in CDC mode.
 
 That is all. In keyboard mode the extension already picks up scans:
 
-- With the staff portal page focused, a scan that looks like a bottle serial (`CT` followed by 9 to 12 characters) is passed to the side panel.
+- With the staff portal page focused, a scan that looks like a bottle serial (two letters for the item, such as `PT`, or the older `CT`, followed by 9 to 12 characters; never a `CN`, `PK`, `BT` or `DV` code) is passed to the side panel.
 - In the side panel, the scan box on the Issue, Return and Look up tabs takes the scan as typed text.
 
 **Do not press "Connect scanner" on a Windows PC.** The scanner already types, so reading it a second way would submit each scan twice.

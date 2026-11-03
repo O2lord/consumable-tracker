@@ -17,14 +17,17 @@ interface Row {
 function describe(row: Row): { ok: boolean; text: string } {
   const r = row.result;
   switch (r.kind) {
-    case "unit":
+    case "unit": {
+      // Name the pack the bottle came in; the batch only when it was received loose.
+      const from = r.packCode ? `pack ${r.packCode}` : `batch ${r.batchCode}`;
       return {
         ok: true,
         text:
           r.state === "IN_TRANSIT"
-            ? `${r.itemName}: in transit, sent from ${r.locationName} (batch ${r.batchCode})`
-            : `${r.itemName}: ${r.state.replace(/_/g, " ").toLowerCase()} at ${r.locationName} (batch ${r.batchCode}${r.expiryDate ? `, expires ${r.expiryDate}` : ""})`,
+            ? `${r.itemName}: in transit, sent from ${r.locationName} (${from})`
+            : `${r.itemName}: ${r.state.replace(/_/g, " ").toLowerCase()} at ${r.locationName} (${from}${r.expiryDate ? `, expires ${r.expiryDate}` : ""})`,
       };
+    }
     case "transfer":
       return {
         ok: true,
@@ -35,13 +38,31 @@ function describe(row: Row): { ok: boolean; text: string } {
         ok: true,
         text: `Delivery${r.supplier ? ` from ${r.supplier}` : ""} into ${r.locationName}, ${r.itemCount} ${r.itemCount === 1 ? "item" : "items"}`,
       };
-    case "pack":
+    case "carton":
       return {
         ok: true,
-        text: `${r.itemName}: pack or roll with ${r.piecesRemaining} of ${r.piecesPerPack} pieces left at ${r.locationName} (batch ${r.batchCode}${r.expiryDate ? `, expires ${r.expiryDate}` : ""})`,
+        text: `${r.itemName}: carton of ${r.packsCount} ${r.packsCount === 1 ? "pack" : "packs"}, at ${r.locationName} (batch ${r.batchCode}${r.expiryDate ? `, expires ${r.expiryDate}` : ""})`,
       };
-    case "batch":
-      return { ok: true, text: `Batch of ${r.quantity} x ${r.itemName} (${r.trackingMode})${r.lotNo ? `, lot ${r.lotNo}` : ""}` };
+    case "pack": {
+      // Say what the pack is, then where it came from: its carton, or the batch when it was received loose.
+      const size = `pack of ${r.piecesPerPack.toLocaleString("en-GB")}`;
+      const left = r.piecesRemaining < r.piecesPerPack ? `, ${r.piecesRemaining.toLocaleString("en-GB")} left` : "";
+      const from = r.cartonCode ? `carton ${r.cartonCode}` : `batch ${r.batchCode}`;
+      return {
+        ok: true,
+        text: `${r.itemName}: ${size}${left}, at ${r.locationName} (${from}${r.expiryDate ? `, expires ${r.expiryDate}` : ""})`,
+      };
+    }
+    case "batch": {
+      // Say what the batch is made of, largest container first: cartons, else packs, else the individual items.
+      const makeup =
+        r.cartonCount > 0
+          ? `${r.cartonCount.toLocaleString("en-GB")} ${r.cartonCount === 1 ? "carton" : "cartons"}`
+          : r.packCount > 0
+            ? `${r.packCount.toLocaleString("en-GB")} ${r.packCount === 1 ? "pack" : "packs"}`
+            : `${r.quantity.toLocaleString("en-GB")} ${r.quantity === 1 ? "bottle" : "bottles"}`;
+      return { ok: true, text: `Batch of ${makeup} of ${r.itemName} (${r.trackingMode})${r.lotNo ? `, lot ${r.lotNo}` : ""}` };
+    }
     case "unknown":
       return { ok: false, text: "Valid format, but this code is not in the system" };
     case "invalid":

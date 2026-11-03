@@ -17,6 +17,14 @@ import { LabelButtons } from "../../LabelButtons";
 
 export const metadata = { title: "Delivery received" };
 
+/** "2 cartons, 36 packs", or a dash when the line has neither (received by the piece, or before cartons existed). */
+function describeContainers(cartons: number, packs: number): string {
+  const parts: string[] = [];
+  if (cartons > 0) parts.push(`${cartons.toLocaleString("en-GB")} ${cartons === 1 ? "carton" : "cartons"}`);
+  if (packs > 0) parts.push(`${packs.toLocaleString("en-GB")} ${packs === 1 ? "pack" : "packs"}`);
+  return parts.length > 0 ? parts.join(", ") : "-";
+}
+
 function Detail({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="min-w-0">
@@ -96,6 +104,7 @@ export default async function DeliveryPage({ params }: { params: Promise<{ code:
               <tr>
                 <th className={thClass}>Item</th>
                 <th className={`${thClass} text-left`}>Quantity</th>
+                <th className={thClass}>Cartons and packs</th>
                 <th className={thClass}>Lot</th>
                 <th className={thClass}>Expiry</th>
                 <th className={thClass}>Batch</th>
@@ -106,11 +115,12 @@ export default async function DeliveryPage({ params }: { params: Promise<{ code:
             </thead>
             <tbody>
               {delivery.lines.map((l) => (
-                <tr key={l.batchCode}>
+                <tr key={l.batchCode} className="[&>td]:align-middle">
                   <td className={`${tdClass} font-medium`}>{l.itemName}</td>
                   <td className={`${tdClass} text-left`}>
                     {l.trackingMode === "SERIAL" ? l.quantity : describeRequestQuantity(l.quantity, l.unit, false)}
                   </td>
+                  <td className={tdClass}>{describeContainers(l.cartonCount, l.packCount)}</td>
                   <td className={tdClass}>{l.lotNo ?? "-"}</td>
                   <td className={tdClass}>{l.expiryDate ?? "-"}</td>
                   <td className={tdClass}>

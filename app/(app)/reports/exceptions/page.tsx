@@ -7,6 +7,7 @@ import { Tabs } from "@/components/ui/Tabs";
 import { Tag } from "@/components/ui/Tag";
 import { Pagination } from "@/components/ui/Pagination";
 import { pageOfArray, parsePage } from "@/lib/pagination";
+import { parseSerial } from "@/lib/serial";
 
 export const metadata = { title: "Exceptions" };
 
@@ -84,7 +85,7 @@ export default async function ExceptionsPage({
                   {u.quantity > 1 ? `${u.quantity} x ` : ""}
                   {u.itemName}
                   <span className="block font-mono text-xs text-zinc-500">
-                    {u.itemRef.startsWith("CT") && u.quantity === 1 ? (
+                    {parseSerial(u.itemRef) && u.quantity === 1 ? (
                       <Link href={`/reports/bottle/${u.itemRef}`} className="underline">
                         {u.itemRef}
                       </Link>

@@ -1,8 +1,13 @@
 import { linkButtonClass, primaryLinkButtonClass } from "@/components/ui/styles";
+import { UsbPrintButton } from "./UsbPrintButton";
 
 type Props = (
-  | { batch: string; only: "batch" | "items" }
+  | { batch: string; only: "batch" | "items" | "cartons" | "packs" | "bottles" }
   | { delivery: string; only: "delivery" | "batches" }
+  // One carton: its own label, or only the packs or bottles inside it. Leave `only` out for all of them together.
+  | { carton: string; only?: "carton" | "packs" | "bottles" }
+  // One pack: its own label, or only the bottles inside it. Leave `only` out for both.
+  | { pack: string; only?: "pack" | "bottles" }
 ) & {
   /** For a single label this is the link text. Several labels get the full PDF button. */
   label: string;
@@ -14,25 +19,37 @@ type Props = (
 
 /**
  * Buttons for one part of a delivery or batch: open the label PDF (staff check it, then print it with the system
- * print window, see docs/label-printing-setup.md) or preview the labels on screen. Nothing is installed on the PC
+ * print window, see docs/label-printing-setup.md). Nothing is installed on the PC
  * besides the printer's driver. Each part is its own action.
  */
 export function LabelButtons(props: Props) {
   const { label, single = false, stacked = false, only } = props;
-  const target = "batch" in props ? `batch=${encodeURIComponent(props.batch)}` : `delivery=${encodeURIComponent(props.delivery)}`;
-  const q = `${target}&only=${only}`;
+  const target =
+    "batch" in props
+      ? `batch=${encodeURIComponent(props.batch)}`
+      : "carton" in props
+        ? `carton=${encodeURIComponent(props.carton)}`
+        : "pack" in props
+          ? `pack=${encodeURIComponent(props.pack)}`
+          : `delivery=${encodeURIComponent(props.delivery)}`;
+  const q = only ? `${target}&only=${only}` : target;
 
   if (single) {
     // A single plain text link, not a button: it sits next to the page title.
     return (
-      <a
-        href={`/api/labels?${q}&format=pdf`}
-        target="_blank"
-        rel="noreferrer"
-        className="text-sm font-semibold text-side-title underline"
-      >
-        {label}
-      </a>
+      <span className="inline-flex items-start gap-3">
+        <a
+          href={`/api/labels?${q}&format=pdf`}
+          target="_blank"
+          rel="noreferrer"
+          className="text-sm font-semibold text-side-title underline"
+        >
+          {label}
+        </a>
+        <UsbPrintButton query={q} className="text-sm font-semibold text-side-title underline">
+          Print (USB)
+        </UsbPrintButton>
+      </span>
     );
   }
 
@@ -47,6 +64,9 @@ export function LabelButtons(props: Props) {
         >
           Open batch label
         </a>
+        <UsbPrintButton query={q} className={`${linkButtonClass} justify-center`}>
+          Print label (USB)
+        </UsbPrintButton>
       </div>
     );
   }
@@ -56,14 +76,9 @@ export function LabelButtons(props: Props) {
       <a href={`/api/labels?${q}&format=pdf`} target="_blank" rel="noreferrer" className={primaryLinkButtonClass}>
         Open PDF (one label per page)
       </a>
-      <a
-        href={`/api/labels?${q}&format=preview`}
-        target="_blank"
-        rel="noreferrer"
-        className="text-sm font-semibold text-side-title underline"
-      >
-        Preview
-      </a>
+      <UsbPrintButton query={q} className={linkButtonClass}>
+        Print labels (USB)
+      </UsbPrintButton>
     </div>
   );
 }

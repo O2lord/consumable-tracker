@@ -2,7 +2,7 @@ import "server-only";
 import { asc, desc, eq, isNull, sql } from "drizzle-orm";
 import type { DbOrTx } from "../audit/events";
 import { db } from "../db/client";
-import { batches, deliveries, itemTypes, locations, users } from "../db/schema";
+import { batches, cartons, deliveries, itemTypes, locations, packs, users } from "../db/schema";
 import { generateDeliveryCode, parseDeliveryCode } from "../../lib/serial";
 import { NotFoundError, ValidationError } from "../domain/errors";
 import { PAGE_SIZE, pageInfo, type Paged } from "../../lib/pagination";
@@ -41,6 +41,10 @@ export interface DeliveryLine {
   quantity: number;
   lotNo: string | null;
   expiryDate: string | null;
+  /** Carton labels (CN...) made for this line. Zero for a line not counted in cartons. */
+  cartonCount: number;
+  /** Pack and roll labels (PK...) made for this line. Zero when the item has no pack level. */
+  packCount: number;
 }
 
 export interface DeliverySummary {
@@ -160,6 +164,8 @@ export async function getDeliveryByCode(codeInput: string, conn: DbOrTx = db()):
       quantity: batches.quantity,
       lotNo: batches.lotNo,
       expiryDate: batches.expiryDate,
+      cartonCount: sql<number>`(select count(*)::int from ${cartons} where ${cartons.batchId} = ${batches.id})`,
+      packCount: sql<number>`(select count(*)::int from ${packs} where ${packs.batchId} = ${batches.id})`,
     })
     .from(batches)
     .innerJoin(itemTypes, eq(itemTypes.id, batches.itemTypeId))

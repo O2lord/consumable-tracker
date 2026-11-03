@@ -1,6 +1,6 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { appendEvents, type DbOrTx, type NewEvent, type Tx } from "../audit/events";
 import { db } from "../db/client";
 import { isUniqueViolation } from "../db/errors";
@@ -443,6 +443,158 @@ export async function allocatePiecesFromPack(
   const plan = planPieceDispatch({ sealed, loose, packSize, pieces });
   if ("error" in plan) throw new ValidationError(plan.error);
   return { pack, taken: [{ batchId: batch.id, code: batch.code, quantity: pieces, opened: plan.opened }] };
+}
+
+// --- reagent containers, one label each ---------------------------------------------------------------------------
+// A reagent counted in tests (formalin, a kit) is received container by container, each with its own PK label. When
+// the lab opens one it scans that label, so the system knows WHICH container is open even when two came in together.
+// The batch ledger still counts the stock; the pack row of a container only holds its tests remaining.
+
+/** What one part of a reagent entry took: the same shape the other allocators return, plus the container it came from. */
+export interface ContainerTaken {
+  batchId: string;
+  code: string;
+  quantity: number;
+  opened: number;
+  /** The PK code of the container the tests came out of, when it has one. */
+  packCode?: string;
+}
+
+/** The container labels scanned for one reagent line, in the order they were opened. `next` is how many are used so far. */
+export interface ContainerQueue {
+  codes: string[];
+  next: number;
+}
+
+/**
+ * Lowers the tests remaining on the partly used containers of a batch, oldest first. The loose pieces of a batch are the
+ * tests left in whichever container is open, so this keeps the pack rows in step when those loose pieces are used.
+ * Returns the code of the first container drawn from, for the audit trail. Stock received before container labels
+ * existed has no pack rows, so this does nothing there.
+ */
+async function drawFromOpenContainers(tx: Tx, batchId: string, pieces: number): Promise<string | undefined> {
+  const open = await tx
+    .select()
+    .from(packs)
+    .where(and(eq(packs.batchId, batchId), gt(packs.piecesRemaining, 0), lt(packs.piecesRemaining, packs.piecesPerPack)))
+    .orderBy(asc(packs.updatedAt), asc(packs.code))
+    .for("update");
+  let left = pieces;
+  let first: string | undefined;
+  for (const p of open) {
+    if (left <= 0) break;
+    const take = Math.min(p.piecesRemaining, left);
+    await tx.update(packs).set({ piecesRemaining: p.piecesRemaining - take }).where(eq(packs.id, p.id));
+    first ??= p.code;
+    left -= take;
+  }
+  return first;
+}
+
+/** True when a sealed, labelled container of this item is on the shelf at this location (not expired). */
+export async function hasLabelledSealedContainer(tx: Tx, itemTypeId: string, locationId: string): Promise<boolean> {
+  const rows = await tx.execute<{ found: number }>(sql`
+    select 1 as found
+    from consumables.packs p
+    join consumables.batches b on b.id = p.batch_id
+    join consumables.v_quantity_balance q on q.batch_id = p.batch_id and q.location_id = ${locationId}
+    where p.item_type_id = ${itemTypeId}
+      and p.pieces_remaining = p.pieces_per_pack
+      and q.on_hand > 0
+      and (b.expiry_date is null or b.expiry_date >= ${today()}::date)
+    limit 1
+  `);
+  return rows.length > 0;
+}
+
+/**
+ * Takes `pieces` tests of a reagent counted in tests from a location. The tests left in the container already open go
+ * first (and lower that container's remaining tests). When they run out, the next scanned container is opened: it must
+ * be a sealed container of this item, from a batch that has not expired and has stock here. If nothing more was scanned
+ * and the shelf holds labelled sealed containers, the lab must scan the one it opened; only stock with no container
+ * labels at all (received before they existed) falls back to earliest expiry. A shortfall is an error.
+ */
+export async function allocateTestsFromContainers(
+  tx: Tx,
+  args: {
+    itemTypeId: string;
+    itemName: string;
+    locationId: string;
+    pieces: number;
+    packSize: number;
+    queue: ContainerQueue;
+  },
+): Promise<ContainerTaken[]> {
+  const { itemTypeId, itemName, locationId, packSize, queue } = args;
+  let remaining = args.pieces;
+  const taken: ContainerTaken[] = [];
+
+  // 1. Tests left in the open container(s), earliest expiry first.
+  const candidates = await tx
+    .select({ id: batches.id, code: batches.code })
+    .from(batches)
+    .where(and(eq(batches.itemTypeId, itemTypeId), or(isNull(batches.expiryDate), gte(batches.expiryDate, today()))))
+    .orderBy(asc(batches.expiryDate), asc(batches.createdAt), asc(batches.id));
+  for (const candidate of candidates) {
+    if (remaining === 0) break;
+    await tx.select({ id: batches.id }).from(batches).where(eq(batches.id, candidate.id)).for("update");
+    const loose = Math.max(await quantityLoose(tx, candidate.id, locationId), 0);
+    if (loose <= 0) continue;
+    const take = Math.min(loose, remaining);
+    const packCode = await drawFromOpenContainers(tx, candidate.id, take);
+    taken.push({ batchId: candidate.id, code: candidate.code, quantity: take, opened: 0, ...(packCode ? { packCode } : {}) });
+    remaining -= take;
+  }
+
+  // 2. A new container is needed: the next scanned label says which.
+  while (remaining > 0 && queue.next < queue.codes.length) {
+    const input = queue.codes[queue.next];
+    const packCode = parsePackCode(input);
+    if (!packCode) throw new ValidationError(`${input} is not a container label for ${itemName}. Scan the PK label on the container`);
+    const [found] = await tx.select({ batchId: packs.batchId }).from(packs).where(eq(packs.code, packCode));
+    if (!found) throw new NotFoundError("Container");
+    // Batch first, then the container, the order a transfer uses, so the two cannot deadlock.
+    await tx.select({ id: batches.id }).from(batches).where(eq(batches.id, found.batchId)).for("update");
+    const [pack] = await tx.select().from(packs).where(eq(packs.code, packCode)).for("update");
+    if (!pack) throw new NotFoundError("Container");
+    if (pack.itemTypeId !== itemTypeId) throw new ValidationError(`${pack.code} is not a container of ${itemName}`);
+    if (pack.piecesRemaining !== pack.piecesPerPack) {
+      throw new ValidationError(
+        pack.piecesRemaining === 0
+          ? `${pack.code} is already finished, so it cannot be opened again`
+          : `${pack.code} is already open with ${pack.piecesRemaining} ${pack.piecesRemaining === 1 ? "test" : "tests"} left, so it is not a new container`,
+      );
+    }
+    const [batch] = await tx
+      .select({ id: batches.id, code: batches.code, expiryDate: batches.expiryDate })
+      .from(batches)
+      .where(eq(batches.id, pack.batchId));
+    if (!batch) throw new NotFoundError("Batch");
+    if (batch.expiryDate && batch.expiryDate < today()) {
+      throw new ValidationError(`${pack.code} is from batch ${batch.code}, which has expired`);
+    }
+    if (Math.max(await quantityOnHand(tx, batch.id, locationId), 0) < 1) {
+      throw new ValidationError(`No sealed ${itemName} from batch ${batch.code} is in stock here, so ${pack.code} cannot be opened`);
+    }
+    const take = Math.min(remaining, packSize);
+    await tx.update(packs).set({ piecesRemaining: pack.piecesPerPack - take }).where(eq(packs.id, pack.id));
+    taken.push({ batchId: batch.id, code: batch.code, quantity: take, opened: 1, packCode: pack.code });
+    remaining -= take;
+    queue.next += 1;
+  }
+
+  // 3. Still short: scan the container, unless this stock has no container labels at all.
+  if (remaining > 0) {
+    if (await hasLabelledSealedContainer(tx, itemTypeId, locationId)) {
+      const more = Math.ceil(remaining / packSize);
+      throw new ValidationError(
+        `${itemName}: ${remaining.toLocaleString("en-GB")} ${remaining === 1 ? "test needs" : "tests need"} a new container. Scan the label of the ${more === 1 ? "container" : `${more} containers`} that ${more === 1 ? "was" : "were"} opened`,
+      );
+    }
+    const rest = await allocatePiecesFromBatches(tx, itemTypeId, itemName, locationId, remaining, packSize);
+    for (const r of rest) taken.push(r);
+  }
+  return taken;
 }
 
 /**

@@ -96,7 +96,7 @@ export async function getDashboardInsights(
     custom?: CustomRange;
     outstanding: number;
     scopes?: Partial<InsightScopes>;
-    /** Whether bulk quantities are shown as packs or pieces, per widget. Pieces when left out. */
+    /** Whether bulk quantities are shown as packs or pieces, per widget. Packs when left out. */
     units?: Partial<Record<WidgetKey, QuantityUnit>>;
     /** Which item types each widget shows. Every item when left out. */
     items?: Partial<Record<WidgetKey, ItemFilter>>;
@@ -123,16 +123,19 @@ export async function getDashboardInsights(
           and e.type in ('ISSUED', 'RETURNED', 'RETURNED_UNUSED')
         group by 1
       `),
-      conn.execute<{ state: string; item_type_id: string; n: number }>(sql`
-        select state, item_type_id, count(*)::int as n from consumables.units group by state, item_type_id
+      conn.execute<{ state: string; item_type_id: string; pack_size: number; n: number }>(sql`
+        select u.state, u.item_type_id, it.pack_size, count(*)::int as n
+        from consumables.units u
+        join consumables.item_types it on it.id = u.item_type_id
+        group by u.state, u.item_type_id, it.pack_size
       `),
-      conn.execute<{ location_id: string; location_name: string; item_type_id: string; item_name: string; state: string; n: number }>(sql`
-        select l.id as location_id, l.name as location_name, it.id as item_type_id, it.name as item_name, u.state, count(*)::int as n
+      conn.execute<{ location_id: string; location_name: string; item_type_id: string; item_name: string; pack_size: number; state: string; n: number }>(sql`
+        select l.id as location_id, l.name as location_name, it.id as item_type_id, it.name as item_name, it.pack_size, u.state, count(*)::int as n
         from consumables.units u
         join consumables.locations l on l.id = u.current_location_id
         join consumables.item_types it on it.id = u.item_type_id
         where u.state in ('IN_STOCK', 'ISSUED', 'RETURNED')
-        group by l.id, l.name, it.id, it.name, u.state
+        group by l.id, l.name, it.id, it.name, it.pack_size, u.state
         order by l.name, it.name
       `),
       conn.execute<{
@@ -210,15 +213,15 @@ export async function getDashboardInsights(
           -- each scan the whole event table.
           select e.batch_id, e.location_id,
                  coalesce(sum(case
-                   when e.type in ('STOCKED', 'RECEIVED', 'FOUND', 'ADJUSTED', 'RETURNED_UNUSED') then e.quantity
-                   when e.type in ('DISPATCHED', 'ISSUED', 'USED', 'OPENED') then -e.quantity
+                   when e.type in ('STOCKED', 'RECEIVED', 'FOUND', 'ADJUSTED', 'RETURNED_UNUSED', 'CONVERTED_IN', 'CONVERTED_OUT_VOIDED') then e.quantity
+                   when e.type in ('DISPATCHED', 'ISSUED', 'USED', 'OPENED', 'CONVERTED_OUT', 'CONVERTED_IN_VOIDED') then -e.quantity
                    when e.type = 'WASTED' and coalesce(e.payload ->> 'source', '') <> 'RETURN' then -e.quantity
                    else 0
                  end), 0)::int as on_hand,
                  coalesce(sum(case when e.pieces > 0 then
                    case
-                     when e.type in ('OPENED', 'RECEIVED', 'FOUND') then e.pieces
-                     when e.type in ('DISPATCHED', 'ISSUED', 'USED') then -e.pieces
+                     when e.type in ('OPENED', 'RECEIVED', 'FOUND', 'CONVERTED_IN', 'CONVERTED_OUT_VOIDED') then e.pieces
+                     when e.type in ('DISPATCHED', 'ISSUED', 'USED', 'CONVERTED_OUT', 'CONVERTED_IN_VOIDED') then -e.pieces
                      when e.type = 'ADJUSTED' and coalesce(e.payload ->> 'piecesDirection', '') = 'REMOVE' then -e.pieces
                      when e.type = 'ADJUSTED' then e.pieces
                      else 0
@@ -241,7 +244,10 @@ export async function getDashboardInsights(
         join consumables.item_types it on it.id = b.item_type_id
         join consumables.locations l on l.id = g.location_id
         cross join lateral (
-          select case when lower(trim(it.unit_of_measure)) in ('pack', 'packs') and it.pack_size > 1
+          -- A reagent counted in tests is held in tests (one loose piece each), so a container of N tests is N pieces.
+          -- Without this its unit is not "pack", the factor stays 1 and 100 tests read as 100 items instead of 1 container.
+          select case when it.tests_per_unit is not null and it.tests_per_unit > 1 then it.tests_per_unit
+                      when lower(trim(it.unit_of_measure)) in ('pack', 'packs') and it.pack_size > 1
                       then it.pack_size else 1 end as f
         ) pf
       `)
@@ -251,10 +257,17 @@ export async function getDashboardInsights(
   const keeps = (widget: WidgetKey, itemTypeId: string) => itemKept(args.items?.[widget] ?? null, itemTypeId);
   // Which locations a widget shows (every one unless the person picked some).
   const keepsPlace = (widget: WidgetKey, locationId: string) => itemKept(args.places?.[widget] ?? null, locationId);
+  // Serialized bottles are counted one by one. A widget set to packs divides them by the item's pack size too
+  // (3,600 tubes in packs of 100 read as 36), so bottles and bulk items agree. Pack size 1 stays as it is.
+  const bottlesIn = (n: number, packSize: number, widget: WidgetKey | null) =>
+    widget !== null && (args.units?.[widget] ?? "packs") === "packs" && packSize > 1 ? n / packSize : n;
+  const r1 = (n: number) => Math.round(n * 10) / 10;
   const stateCount = (widget: WidgetKey | null, ...names: string[]) =>
-    stateRows
-      .filter((r) => names.includes(r.state) && (widget === null || keeps(widget, r.item_type_id)))
-      .reduce((sum, r) => sum + r.n, 0);
+    r1(
+      stateRows
+        .filter((r) => names.includes(r.state) && (widget === null || keeps(widget, r.item_type_id)))
+        .reduce((sum, r) => sum + bottlesIn(r.n, r.pack_size, widget), 0),
+    );
   // Bottles by state for the state widget (only the items picked there).
   const bottleStates = {
     inStore: stateCount("states", "IN_STOCK"),
@@ -262,15 +275,14 @@ export async function getDashboardInsights(
     returned: stateCount("states", "RETURNED"),
     voided: stateCount("states", "VOIDED", "WRITTEN_OFF"),
     inTransit: stateCount("states", "IN_TRANSIT", "MISSING_IN_TRANSIT"),
-    total: stateRows.filter((r) => keeps("states", r.item_type_id)).reduce((sum, r) => sum + r.n, 0),
+    total: r1(stateRows.filter((r) => keeps("states", r.item_type_id)).reduce((sum, r) => sum + bottlesIn(r.n, r.pack_size, "states"), 0)),
   };
   // Every bottle currently issued, whatever the widgets show: the base of the outstanding share.
   const allBottlesIssued = stateCount(null, "ISSUED");
   const bulkList = Array.from(bulkRaw);
   // A bulk quantity is held in pieces. A widget set to packs divides a pack item's pieces by its pack size (the
   // factor `f`, 1 for anything that is not a pack item, which therefore stays as it is).
-  const r1 = (n: number) => Math.round(n * 10) / 10;
-  const convert = (n: number, f: number, widget: WidgetKey) => ((args.units?.[widget] ?? "pieces") === "packs" && f > 1 ? n / f : n);
+  const convert = (n: number, f: number, widget: WidgetKey) => ((args.units?.[widget] ?? "packs") === "packs" && f > 1 ? n / f : n);
   const bulkTotal = (field: "shelf" | "used", widget: WidgetKey) =>
     r1(
       bulkList
@@ -285,7 +297,7 @@ export async function getDashboardInsights(
   const stateBottles = usesBottles(scopes.states);
   const stateBulk = usesBulk(scopes.states);
   const states: BottlesByState = {
-    inStore: (stateBottles ? bottleStates.inStore : 0) + (stateBulk ? bulkShelfTotal : 0),
+    inStore: r1((stateBottles ? bottleStates.inStore : 0) + (stateBulk ? bulkShelfTotal : 0)),
     issued: stateBottles ? bottleStates.issued : 0,
     returned: stateBottles ? bottleStates.returned : 0,
     voided: stateBottles ? bottleStates.voided : 0,
@@ -301,9 +313,9 @@ export async function getDashboardInsights(
       if (!keeps("locations", r.item_type_id)) continue;
       const key = `${r.location_name}\u0000${r.item_name}`;
       const row = grouped.get(key) ?? { locationName: r.location_name, itemName: r.item_name, inStore: 0, issued: 0, returned: 0 };
-      if (r.state === "IN_STOCK") row.inStore += r.n;
-      else if (r.state === "ISSUED") row.issued += r.n;
-      else row.returned += r.n;
+      if (r.state === "IN_STOCK") row.inStore += bottlesIn(r.n, r.pack_size, "locations");
+      else if (r.state === "ISSUED") row.issued += bottlesIn(r.n, r.pack_size, "locations");
+      else row.returned += bottlesIn(r.n, r.pack_size, "locations");
       grouped.set(key, row);
     }
   }
@@ -382,10 +394,11 @@ export async function getDashboardInsights(
 
   // What is in store at a location for the health card: bottles, bulk items, or both, as the card's scope says.
   const inStoreAt = (locationName: string) =>
+    r1(
     (usesBottles(scopes.health)
       ? locationRows
           .filter((r) => r.location_name === locationName && r.state === "IN_STOCK" && keeps("health", r.item_type_id))
-          .reduce((n, r) => n + r.n, 0)
+          .reduce((n, r) => n + bottlesIn(r.n, r.pack_size, "health"), 0)
       : 0) +
     (usesBulk(scopes.health)
       ? r1(
@@ -393,12 +406,15 @@ export async function getDashboardInsights(
             .filter((r) => r.location_name === locationName && keeps("health", r.item_type_id))
             .reduce((n, r) => n + convert(Math.max(r.shelf, 0), r.f, "health"), 0),
         )
-      : 0);
+      : 0),
+    );
   const healthBottlesInStore = locationRows
     .filter((r) => r.state === "IN_STOCK" && keeps("health", r.item_type_id) && keepsPlace("health", r.location_id))
-    .reduce((n, r) => n + r.n, 0);
+    .reduce((n, r) => n + bottlesIn(r.n, r.pack_size, "health"), 0);
   const inStoreEverywhere =
-    (usesBottles(scopes.health) ? healthBottlesInStore : 0) + (usesBulk(scopes.health) ? bulkTotal("shelf", "health") : 0);
+    r1(
+      (usesBottles(scopes.health) ? healthBottlesInStore : 0) + (usesBulk(scopes.health) ? bulkTotal("shelf", "health") : 0),
+    );
 
   const pooledHealth = summarize(Array.from(pooledByItem.values(), toItem), inStoreEverywhere);
   const healthByLocation: LocationHealth[] = Array.from(rowsByLocation, ([locationId, { name, rows }]) => ({

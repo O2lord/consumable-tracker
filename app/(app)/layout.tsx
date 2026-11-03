@@ -5,12 +5,13 @@ import { canWorkAtAnyLocation, navFor } from "@/server/auth/permissions";
 import { listLocations } from "@/server/services/catalog.service";
 import { SyncStatus } from "@/components/offline/SyncStatus";
 import { OfflineNotice } from "@/components/offline/OfflineNotice";
-import { SidebarBrand, SidebarFrame, SidebarNav, SidebarToggle, type SidebarGroup } from "@/components/nav/SidebarNav";
+import { SidebarBrand, SidebarFrame, SidebarNav, SidebarToggle, type SidebarGroup, type SidebarLink } from "@/components/nav/SidebarNav";
 import { UserMenu } from "@/components/nav/UserMenu";
 import { WorkLocationSwitcher } from "@/components/nav/WorkLocationSwitcher";
 import { PageLoading } from "@/components/ui/PageLoading";
 import { ToastProvider } from "@/components/ui/Toast";
 import { logoutAction, setWorkLocationAction } from "./actions";
+import { ISSUE_AND_RETURN_TABS } from "@/lib/issue-return-tabs";
 
 // Everything under (app) needs a signed-in, active user. Pages check their own permission with
 // requirePermission(); this layout decides which links to show.
@@ -75,9 +76,21 @@ async function getSessionOrNull() {
 const GROUPS: { title: string; prefixes: string[] }[] = [
   { title: "Store", prefixes: ["/dashboard", "/store"] },
   { title: "Distribution", prefixes: ["/distribution"] },
+  { title: "Lab", prefixes: ["/lab"] },
   { title: "Reports", prefixes: ["/reports"] },
   { title: "Admin", prefixes: ["/admin"] },
 ];
+
+// Issue, Used for test, Return and Void are tabs of one page, so the sidebar shows them as one entry. It sits where the
+// first of them would, opens the first one the person may use, and stays highlighted on all four.
+const TAB_HREFS: string[] = ISSUE_AND_RETURN_TABS.map((t) => t.href);
+function foldIssueAndReturn(items: SidebarLink[]): SidebarLink[] {
+  const first = items.find((i) => TAB_HREFS.includes(i.href));
+  if (!first) return items;
+  return items
+    .filter((i) => !TAB_HREFS.includes(i.href) || i === first)
+    .map((i) => (i === first ? { label: "Usage", href: first.href, match: TAB_HREFS } : i));
+}
 
 async function SidebarMenu() {
   // Does not redirect: SessionGate is the one place that sends signed-out visitors to /login.
@@ -87,9 +100,11 @@ async function SidebarMenu() {
 
   const groups: SidebarGroup[] = GROUPS.map((g) => ({
     title: g.title,
-    items: nav
-      .filter((item) => g.prefixes.some((p) => item.href === p || item.href.startsWith(`${p}/`)))
-      .map(({ label, href }) => ({ label, href })),
+    items: foldIssueAndReturn(
+      nav
+        .filter((item) => g.prefixes.some((p) => item.href === p || item.href.startsWith(`${p}/`)))
+        .map(({ label, href }) => ({ label, href })),
+    ),
   })).filter((g) => g.items.length > 0);
 
   return <SidebarNav groups={groups} />;

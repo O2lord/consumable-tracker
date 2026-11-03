@@ -5,10 +5,10 @@ import { ActionForm } from "@/components/forms/ActionForm";
 import { FormDialog } from "@/components/forms/FormDialog";
 import { Select } from "@/components/ui/Dropdown";
 import { Field } from "@/components/ui/Field";
-import { PackEquivalent } from "@/components/ui/PackEquivalent";
 import { inputClass, linkButtonClass } from "@/components/ui/styles";
 import { UnitSwitch } from "@/components/ui/UnitSwitch";
-import { canSwitchUnit, describeRequestQuantity, isPackUnit, isPieceUnit, toStockQuantity, type EntryUnit } from "@/lib/pack-size";
+import { isPackUnit, planReceipt, receiveChoices, type ReceiveEntry, type ReceiptPlan } from "@/lib/pack-size";
+import { MAX_SERIAL_BATCH } from "@/types/stock-in";
 import { stockInManyAction } from "./actions";
 
 export interface ItemTypeOption {
@@ -21,6 +21,10 @@ export interface ItemTypeOption {
   /** Pieces in one pack, for converting between packs and pieces. */
   packSize: number;
   packSizeConfirmed: boolean;
+  /** Packs (bags, rolls, bottles) in one carton as delivered. Null when no carton size is set. */
+  packsPerCarton: number | null;
+  /** Tests one container covers, for a reagent counted in tests. Each container is received whole and gets its own label. */
+  testsPerUnit: number | null;
 }
 export interface StoreOption {
   id: string;
@@ -37,6 +41,45 @@ function formatDate(value: string) {
   if (!value) return "";
   const [y, m, d] = value.split("-");
   return y && m && d ? `${d}/${m}/${y}` : value;
+}
+
+const n = (value: number) => value.toLocaleString("en-GB");
+const plural = (count: number, one: string, many: string) => `${n(count)} ${count === 1 ? one : many}`;
+
+/** What a line counted this way comes to, for example "2 cartons = 36 packs = 3,600 bottles. 3,639 labels will be made". */
+function describePlan(item: ItemTypeOption, plan: ReceiptPlan, entry: ReceiveEntry): string {
+  // A reagent counted in tests is received in containers, each with its own label and all its tests.
+  if (item.testsPerUnit !== null) {
+    const parts: string[] = [];
+    if (plan.cartons > 0) parts.push(plural(plan.cartons, "carton", "cartons"));
+    parts.push(plural(plan.quantity, "container", "containers"));
+    parts.push(plural(plan.quantity * item.testsPerUnit, "test", "tests"));
+    return `${parts.join(" = ")}. ${plural(1 + plan.cartons + plan.packs, "label", "labels")} will be made`;
+  }
+  const serial = item.trackingMode === "SERIAL";
+  const perPack = item.packSize >= 1 ? item.packSize : 1;
+  // Pieces: bottles for a serial item, otherwise the stock unit counted out (a pack item holds packSize pieces a pack).
+  const pieces = serial ? plan.quantity : plan.quantity * (isPackUnit(item.unit) ? perPack : 1);
+  const packsTotal = perPack > 1 && pieces % perPack === 0 ? pieces / perPack : plan.packs > 0 ? plan.packs : null;
+  const noun = serial ? plural(pieces, "bottle", "bottles") : plural(pieces, "piece", "pieces");
+
+  const parts: string[] = [];
+  if (plan.cartons > 0) parts.push(plural(plan.cartons, "carton", "cartons"));
+  if (packsTotal !== null && (entry !== "pieces" || plan.cartons === 0)) parts.push(plural(packsTotal, "pack", "packs"));
+  if (parts.length === 0 || pieces !== packsTotal) parts.push(noun);
+  // A batch label always prints; cartons, packs and bottles add to it.
+  const labels = 1 + plan.cartons + plan.packs + plan.items;
+  return `${parts.join(" = ")}. ${plural(labels, "label", "labels")} will be made`;
+}
+
+/** Which of cartons, packs and pieces an item can be received in (pure, from its sizes). */
+function choicesOf(item: ItemTypeOption) {
+  return receiveChoices({
+    unit: item.unit,
+    packSize: item.packSize,
+    packsPerCarton: item.packsPerCarton,
+    testsPerUnit: item.testsPerUnit,
+  });
 }
 
 /**
@@ -72,31 +115,45 @@ function StockInLine({
   const [lotNo, setLotNo] = useState("");
   const [expiryDate, setExpiryDate] = useState("");
   const [error, setError] = useState<string | null>(null);
-  // Which unit the quantity is typed in: the item's own unit, or the other one (pieces for packs, packs for pieces).
-  const [entry, setEntry] = useState<EntryUnit>("stock");
   const selected = itemTypes.find((i) => i.id === itemTypeId);
+  // What the quantity is counted in. It starts on cartons when the item has a carton size, then packs, then pieces.
+  const [entry, setEntry] = useState<ReceiveEntry>(() => (selected ? choicesOf(selected).default : "pieces"));
 
   const isSerial = selected?.trackingMode === "SERIAL";
-  // Only bulk items can be counted in packs or pieces. A bottle is always counted one by one.
-  const switchable = !!selected && !isSerial && (isPackUnit(selected.unit) || isPieceUnit(selected.unit));
-  const canConvert = !!selected && canSwitchUnit(selected.unit, selected.packSize);
-  const packIsStock = !!selected && isPackUnit(selected.unit);
+  const choices = selected ? choicesOf(selected) : null;
+  const isRoll = !!selected && /^rolls?$/i.test(selected.unit.trim());
+  const isContainer = !!selected && selected.testsPerUnit !== null;
+  const packWord = isContainer ? "containers" : isRoll ? "rolls" : "packs";
   const qty = Number(quantity);
-  const converted =
-    selected && switchable && entry === "alt" && Number.isInteger(qty) && qty > 0
-      ? toStockQuantity(qty, entry, selected.unit, selected.packSize)
+  const plan: ReceiptPlan | { error: string } | null =
+    selected && Number.isInteger(qty) && qty > 0
+      ? planReceipt({
+          unit: selected.unit,
+          packSize: selected.packSize,
+          packsPerCarton: selected.packsPerCarton,
+          testsPerUnit: selected.testsPerUnit,
+          entry,
+          quantity: qty,
+          serial: isSerial,
+        })
       : null;
-  const unitLabel = !selected ? "" : isSerial ? "bottles" : entry === "alt" ? (packIsStock ? "Pieces" : "Pack") : selected.unit;
+  // One line makes at most this many bottle or pack labels, so a big delivery has to be split over two lines.
+  const tooMany =
+    plan && !("error" in plan) && (plan.items > MAX_SERIAL_BATCH || plan.packs > MAX_SERIAL_BATCH)
+      ? `That comes to ${n(Math.max(plan.items, plan.packs))} labels, and at most ${n(MAX_SERIAL_BATCH)} can be made at a time. Receive it as two or more lines.`
+      : null;
+  const unitLabel = !selected ? "" : entry === "carton" ? "cartons" : entry === "pack" ? packWord : isSerial ? "bottles" : "pieces";
 
   let hint: string;
-  if (isSerial) hint = "One barcode label is made for each bottle (up to 5000 at a time).";
-  else if (switchable) hint = "One label is made for the whole batch, however many packs it holds.";
-  else hint = "One label is made for the whole batch.";
+  if (isSerial) hint = `One barcode label is made for each bottle (up to ${n(MAX_SERIAL_BATCH)} at a time), and one for each carton and pack.`;
+  else if (isContainer) hint = "One label is made for the whole batch, plus one for each carton and one for each container, so a container can be scanned when it is opened.";
+  else hint = "One label is made for the whole batch, plus one for each carton and pack.";
 
   const handleDone = () => {
     // An empty quantity is fine here: the row stays marked "Quantity needed" and is checked when the delivery is received.
     if (quantity && (!Number.isInteger(qty) || qty < 1)) return setError("Enter a whole-number quantity.");
-    if (converted && "error" in converted) return setError(converted.error);
+    if (plan && "error" in plan) return setError(plan.error);
+    if (tooMany) return setError(tooMany);
     setError(null);
     onDone();
   };
@@ -145,7 +202,9 @@ function StockInLine({
               value={itemTypeId}
               onChange={(value) => {
                 onItemChange(value);
-                setEntry("stock");
+                const next = itemTypes.find((i) => i.id === value);
+                setEntry(next ? choicesOf(next).default : "pieces");
+                setError(null);
               }}
               searchable
               options={availableItemTypes.map((i) => ({ value: i.id, label: i.name }))}
@@ -170,26 +229,27 @@ function StockInLine({
                 aria-label={selected ? `Quantity of ${selected.name} in ${unitLabel}` : "Quantity"}
               />
               <input type="hidden" name="entryUnit" value={entry} />
-              {selected && switchable ? (
+              {selected && choices ? (
                 <UnitSwitch
                   ariaLabel={`Count ${selected.name} in`}
-                  value={entry === "stock" ? (packIsStock ? "pack" : "pieces") : packIsStock ? "pieces" : "pack"}
+                  value={entry}
                   onChange={(value) => {
-                    const wantsPack = value === "pack";
-                    setEntry(wantsPack === packIsStock ? "stock" : "alt");
+                    setEntry(value as ReceiveEntry);
+                    setError(null);
                   }}
                   options={[
+                    { value: "carton", label: "Cartons", disabled: !choices.carton, title: "No carton size is set for this item" },
                     {
                       value: "pack",
-                      label: "Packs",
-                      disabled: !packIsStock && !canConvert,
+                      label: isContainer ? "Containers" : isRoll ? "Rolls" : "Packs",
+                      disabled: !choices.pack,
                       title: "No pack size is set for this item",
                     },
                     {
                       value: "pieces",
-                      label: "Pieces",
-                      disabled: packIsStock && !canConvert,
-                      title: "No pack size is set for this item",
+                      label: isSerial ? "Bottles" : "Pieces",
+                      disabled: isRoll || isContainer,
+                      title: isContainer ? "A reagent is counted in whole containers" : "Rolls are counted whole",
                     },
                   ]}
                 />
@@ -199,25 +259,17 @@ function StockInLine({
         </div>
         <p className="-mt-1 text-xs text-zinc-500">{hint}</p>
 
-        {converted && "error" in converted ? (
-          <p className="text-xs text-warn">
-            {converted.error}. Stock comes in as whole packs: loose pieces only appear when a pack is opened and part of it is sent.
-          </p>
-        ) : converted && selected ? (
-          <p className="text-xs text-zinc-500">
-            Recorded as {describeRequestQuantity(converted.quantity, selected.unit, false)}
-            {selected.packSizeConfirmed ? null : (
+        {plan && "error" in plan ? (
+          <p className="text-xs text-warn">{plan.error}</p>
+        ) : plan && selected ? (
+          <p className={`text-xs ${tooMany ? "font-semibold text-warn" : "text-zinc-500"}`}>
+            {tooMany ?? describePlan(selected, plan, entry)}
+            {selected.packSizeConfirmed || entry === "pieces" ? null : (
               <span className="ml-1 rounded-full bg-warn-soft px-1.5 py-0.5 text-[10px] font-semibold text-warn">unconfirmed</span>
             )}
           </p>
-        ) : selected && switchable && Number.isFinite(qty) && qty > 0 ? (
-          <p className="text-xs">
-            <PackEquivalent quantity={qty} unit={selected.unit} packSize={selected.packSize} confirmed={selected.packSizeConfirmed} />
-          </p>
-        ) : selected && switchable && !canConvert ? (
-          <p className="text-xs text-zinc-500">
-            No pack size is set for this item, so it can only be received in {selected.unit.toLowerCase()}.
-          </p>
+        ) : selected && choices && !choices.carton && !choices.pack ? (
+          <p className="text-xs text-zinc-500">No carton or pack size is set for this item, so it can only be received in pieces.</p>
         ) : null}
 
         {/* Lot number and expiry date on one line */}

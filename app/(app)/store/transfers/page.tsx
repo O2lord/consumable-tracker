@@ -37,6 +37,8 @@ export default async function TransfersPage({
   const drafts = draftPage.rows;
   const history = historyPage.rows;
   const stores = locations.filter((l) => l.type === "STORE");
+  // The main store is the usual place stock leaves from, so it is preselected; otherwise the person's own store.
+  const mainStore = stores.find((s) => s.code.toLowerCase() === "main-store" || s.name.trim().toLowerCase() === "main store");
   const homeStore = stores.find((s) => s.id === session.homeLocationId);
   const destinations = locations.map((l) => ({ id: l.id, name: l.name }));
 
@@ -64,7 +66,7 @@ export default async function TransfersPage({
           header={header}
           stores={stores.map((s) => ({ id: s.id, name: s.name }))}
           destinations={destinations}
-          defaultStoreId={homeStore?.id}
+          defaultStoreId={mainStore?.id ?? homeStore?.id}
         />
       )}
 

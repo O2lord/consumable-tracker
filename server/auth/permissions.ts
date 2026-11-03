@@ -29,6 +29,8 @@ export const PERMISSIONS = [
   "issue",
   // end-of-day entry of what the lab used at the bench, with no patient (Used for test)
   "record_usage",
+  // turn stock held at the lab into another item, by a fixed recipe (Lab > Conversion)
+  "record_conversion",
   "return",
   "void",
   "view_location_stock",
@@ -53,6 +55,8 @@ export const PERMISSIONS = [
   "manage_policies",
   "manage_test_catalog",
   "manage_void_reasons",
+  // define the lab conversion recipes (Admin > Conversions)
+  "manage_conversions",
   "manage_imports",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
@@ -97,8 +101,13 @@ export const PERMISSION_GROUPS: readonly {
         label: "Record lab usage",
         hint: "End-of-day entry of what the lab used at the bench, with no patient",
       },
+      {
+        permission: "record_conversion",
+        label: "Record lab conversions",
+        hint: "Turn stock held at the lab into another item by a recipe, such as diluting formalin",
+      },
       { permission: "return", label: "Return bottles" },
-      { permission: "void", label: "Void bottles" },
+      { permission: "void", label: "Void bottles", hint: "Also voids a lab conversion made by mistake" },
       { permission: "view_location_stock", label: "See stock at their location" },
       { permission: "count_stock", label: "Count stock", hint: "Count bulk items at their location and post the variance" },
       { permission: "create_request", label: "Request stock from the store" },
@@ -129,6 +138,7 @@ export const PERMISSION_GROUPS: readonly {
       { permission: "manage_test_catalog", label: "Manage the test catalog" },
       { permission: "manage_policies", label: "Manage issue policies" },
       { permission: "manage_void_reasons", label: "Manage void reasons" },
+      { permission: "manage_conversions", label: "Manage conversion recipes", hint: "What can be converted into what, and the ratio" },
       { permission: "manage_imports", label: "Manage imports" },
     ],
   },
@@ -150,6 +160,7 @@ const DISTRIBUTOR: readonly Permission[] = [
   "receive",
   "issue",
   "record_usage",
+  "record_conversion",
   "return",
   "void",
   "view_location_stock",
@@ -280,6 +291,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { label: "Return", href: "/distribution/return", permission: "return" },
   { label: "Stock", href: "/distribution/stock", permission: ["view_location_stock", "count_stock"] },
   { label: "Void", href: "/distribution/void", permission: "void" },
+  { label: "Conversion", href: "/lab/conversion", permission: "record_conversion" },
   { label: "Discrepancies", href: "/reports/discrepancies", permission: "view_discrepancies" },
   { label: "Outstanding", href: "/reports/outstanding", permission: "view_reports" },
   { label: "Expiring stock", href: "/reports/expiring", permission: "view_reports" },
@@ -295,6 +307,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { label: "Item types", href: "/admin/item-types", permission: "manage_item_types" },
   { label: "Target stock", href: "/admin/par-levels", permission: "manage_par_levels" },
   { label: "Void reasons", href: "/admin/void-reasons", permission: "manage_void_reasons" },
+  { label: "Conversions", href: "/admin/conversions", permission: "manage_conversions" },
   { label: "Test catalog", href: "/admin/test-catalog", permission: "manage_test_catalog" },
   { label: "Issue policies", href: "/admin/issue-policies", permission: "manage_policies" },
   { label: "Imports", href: "/admin/imports", permission: "manage_imports" },

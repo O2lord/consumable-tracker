@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, count, eq, gt, inArray, ne } from "drizzle-orm";
+import { and, asc, count, eq, gt, inArray, isNotNull, like, ne } from "drizzle-orm";
 import { db } from "../db/client";
 import { isUniqueViolation } from "../db/errors";
 import { batches, events, itemTypes, locations, testStandardItems, units, voidReasons } from "../db/schema";
@@ -13,6 +13,7 @@ import type {
   VoidReasonInput,
 } from "../../types/admin";
 import type { DbOrTx } from "../audit/events";
+import { suggestLabelCode } from "../../lib/item-label-code";
 
 // Admin-maintained reference data: locations, item types and void reasons.
 // The caller checks the manage_* permission; these functions only enforce data rules.
@@ -109,12 +110,88 @@ export async function listActiveItemTypes(conn: DbOrTx = db()) {
   return conn.select().from(itemTypes).where(eq(itemTypes.active, true)).orderBy(asc(itemTypes.name));
 }
 
+/** Label codes other items already use (all of them, or all but `exceptId`), with the item that has each one. */
+async function labelCodesInUse(conn: DbOrTx, exceptId?: string): Promise<Map<string, string>> {
+  const rows = await conn
+    .select({ id: itemTypes.id, labelCode: itemTypes.labelCode, name: itemTypes.name })
+    .from(itemTypes)
+    .where(isNotNull(itemTypes.labelCode));
+  const used = new Map<string, string>();
+  for (const r of rows) if (r.labelCode && r.id !== exceptId) used.set(r.labelCode, r.name);
+  return used;
+}
+
+async function assertLabelCodeFree(conn: DbOrTx, labelCode: string, exceptId?: string) {
+  const owner = (await labelCodesInUse(conn, exceptId)).get(labelCode);
+  if (owner) throw new ValidationError(`Label code ${labelCode} already belongs to ${owner}. Choose another`);
+}
+
+/** A free label code for an item, suggested from its name. */
+async function pickLabelCode(conn: DbOrTx, name: string, exceptId?: string): Promise<string> {
+  const taken = new Set((await labelCodesInUse(conn, exceptId)).keys());
+  const suggested = suggestLabelCode(name, taken);
+  if (!suggested) throw new ValidationError("Every label code is taken");
+  return suggested;
+}
+
+/**
+ * The label code that starts this item's bottle serials. A serial item without one is given a suggested code now, so
+ * stock can always be received; an admin can set it first, or change it later until bottles carry it.
+ */
+export async function ensureLabelCode(
+  conn: DbOrTx,
+  itemType: { id: string; name: string; labelCode: string | null },
+): Promise<string> {
+  if (itemType.labelCode) return itemType.labelCode;
+  const labelCode = await pickLabelCode(conn, itemType.name, itemType.id);
+  await conn.update(itemTypes).set({ labelCode }).where(eq(itemTypes.id, itemType.id));
+  return labelCode;
+}
+
+/** How many bottles of this item already carry its label code on their labels. */
+async function bottlesWithLabelCode(conn: DbOrTx, itemTypeId: string, labelCode: string): Promise<number> {
+  const [row] = await conn
+    .select({ n: count() })
+    .from(units)
+    .where(and(eq(units.itemTypeId, itemTypeId), like(units.serial, `${labelCode}%`)));
+  return row?.n ?? 0;
+}
+
+/**
+ * What an item type's test setting turns into. A reagent counted in tests (tests per container set) is a quantity item,
+ * its pack size is kept equal to the tests per container (a container opened at the bench adds that many loose
+ * pieces, one per test), and it is recorded under Used for test, so it counts as a bench supply.
+ */
+function testCounting(input: { testsPerUnit?: number; trackingMode: string; packSize: number; benchSupply: boolean }) {
+  const testsPerUnit = input.testsPerUnit ?? null;
+  if (testsPerUnit !== null && input.trackingMode !== "QUANTITY") {
+    throw new ValidationError("Tests per container is for quantity items. Serialized bottles are scanned one by one");
+  }
+  return {
+    testsPerUnit,
+    packSize: testsPerUnit ?? input.packSize,
+    benchSupply: input.benchSupply || testsPerUnit !== null,
+  };
+}
+
 export async function createItemType(input: ItemTypeInput, conn: DbOrTx = db()) {
+  const counting = testCounting(input);
+  // Only serial items have bottle labels. One that is not told its code is given a suggestion from its name.
+  let labelCode: string | null = null;
+  if (input.trackingMode === "SERIAL") {
+    if (input.labelCode) {
+      await assertLabelCodeFree(conn, input.labelCode);
+      labelCode = input.labelCode;
+    } else {
+      labelCode = await pickLabelCode(conn, input.name);
+    }
+  }
   try {
     const [row] = await conn
       .insert(itemTypes)
       .values({
         code: input.code,
+        labelCode,
         name: input.name,
         category: input.category,
         trackingMode: input.trackingMode,
@@ -122,10 +199,12 @@ export async function createItemType(input: ItemTypeInput, conn: DbOrTx = db()) 
         unitOfMeasure: input.unitOfMeasure,
         reorderLevel: input.reorderLevel,
         allowedServiceRoles: input.allowedServiceRoles.length > 0 ? input.allowedServiceRoles : null,
-        packSize: input.packSize,
+        packSize: counting.packSize,
         packSizeConfirmed: input.packSizeConfirmed,
+        packsPerCarton: input.packsPerCarton ?? null,
+        testsPerUnit: counting.testsPerUnit,
         coldStorage: input.coldStorage,
-        benchSupply: input.benchSupply,
+        benchSupply: counting.benchSupply,
       })
       .returning();
     return row;
@@ -136,6 +215,7 @@ export async function createItemType(input: ItemTypeInput, conn: DbOrTx = db()) 
 }
 
 export async function updateItemType(input: ItemTypeUpdate, conn: DbOrTx = db()) {
+  const counting = testCounting(input);
   const [current] = await conn.select().from(itemTypes).where(eq(itemTypes.id, input.id));
   if (!current) throw new NotFoundError("Item type");
 
@@ -148,7 +228,7 @@ export async function updateItemType(input: ItemTypeUpdate, conn: DbOrTx = db())
 
   // Loose pieces are worked out with the pack size (an opened pack adds one pack's worth of pieces), so once any
   // piece has moved for this item the pack size is fixed: changing it would silently change old balances.
-  if (current.packSize !== input.packSize) {
+  if (current.packSize !== counting.packSize) {
     const [moved] = await conn
       .select({ n: count() })
       .from(events)
@@ -161,10 +241,26 @@ export async function updateItemType(input: ItemTypeUpdate, conn: DbOrTx = db())
     }
   }
 
+  // The label code starts every new bottle's serial, so once bottles carry it, it stays. Bottles made before the item
+  // had a code (CT...) do not count: they keep their labels, and new ones get the new code.
+  let labelCode: string | null = null;
+  if (input.trackingMode === "SERIAL") {
+    labelCode = input.labelCode ?? current.labelCode;
+    if (labelCode && labelCode !== current.labelCode) {
+      await assertLabelCodeFree(conn, labelCode, current.id);
+      if (current.labelCode && (await bottlesWithLabelCode(conn, current.id, current.labelCode)) > 0) {
+        throw new ValidationError(
+          `Bottles labelled ${current.labelCode} already exist, so this item's label code can no longer be changed`,
+        );
+      }
+    }
+  }
+
   const [row] = await conn
     .update(itemTypes)
     .set({
       name: input.name,
+      labelCode,
       category: input.category,
       trackingMode: input.trackingMode,
       containerType: input.containerType ?? null,
@@ -172,16 +268,19 @@ export async function updateItemType(input: ItemTypeUpdate, conn: DbOrTx = db())
       reorderLevel: input.reorderLevel,
       allowedServiceRoles: input.allowedServiceRoles.length > 0 ? input.allowedServiceRoles : null,
       // Pack size is display information until pieces move; after that it is locked (checked above).
-      packSize: input.packSize,
+      packSize: counting.packSize,
       packSizeConfirmed: input.packSizeConfirmed,
+      // Only affects deliveries received from now on, so it is never locked.
+      packsPerCarton: input.packsPerCarton ?? null,
+      testsPerUnit: counting.testsPerUnit,
       coldStorage: input.coldStorage,
-      benchSupply: input.benchSupply,
+      benchSupply: counting.benchSupply,
     })
     .where(eq(itemTypes.id, input.id))
     .returning();
   // A bench supply is never listed against a test, so making an item one takes it off any list it was on.
   // Stock is untouched.
-  if (input.benchSupply && !current.benchSupply) {
+  if (counting.benchSupply && !current.benchSupply) {
     await conn.delete(testStandardItems).where(eq(testStandardItems.itemTypeId, input.id));
   }
   return row;

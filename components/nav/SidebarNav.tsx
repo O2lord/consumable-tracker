@@ -7,6 +7,8 @@ import { usePathname } from "next/navigation";
 export interface SidebarLink {
   label: string;
   href: string;
+  /** Other paths that also count as this link's page, so it stays highlighted on them (a link that stands for several tabs). */
+  match?: string[];
 }
 
 export interface SidebarGroup {
@@ -33,11 +35,12 @@ export function SidebarNav({ groups }: { groups: SidebarGroup[] }) {
   // Titles of the sections the user has folded away. Everything starts expanded.
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
-  const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
+  const isActive = (href: string, match?: string[]) =>
+    [href, ...(match ?? [])].some((h) => pathname === h || pathname.startsWith(`${h}/`));
 
   // Navigating to a page (by link, back button, etc.) always reveals the section it lives in.
   useEffect(() => {
-    const current = groups.find((g) => g.items.some((item) => isActive(item.href)));
+    const current = groups.find((g) => g.items.some((item) => isActive(item.href, item.match)));
     if (!current) return;
     setCollapsed((prev) => {
       if (!prev.has(current.title)) return prev;
@@ -105,7 +108,7 @@ export function SidebarNav({ groups }: { groups: SidebarGroup[] }) {
             </button>
             <div id={listId} className={`${isCollapsed ? "hidden" : "flex"} flex-col gap-0.5`}>
             {group.items.map((item) => {
-              const active = isActive(item.href);
+              const active = isActive(item.href, item.match);
               return (
                 <Link
                   key={item.href}

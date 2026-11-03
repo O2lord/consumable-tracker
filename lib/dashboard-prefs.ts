@@ -5,7 +5,7 @@
 /** Which kinds of item a widget counts: serialized bottles, bulk (quantity) items, or both. Worked out from the picked items. */
 export type ItemScope = "bottles" | "bulk" | "both";
 
-/** Bulk quantities shown as whole packs or as single pieces. Bottles are never counted in either. */
+/** Quantities shown as whole packs or as single pieces. Items with a pack size above 1 are divided by it in packs, bottles included. */
 export type QuantityUnit = "pieces" | "packs";
 
 export type WidgetKey = "locations" | "health" | "states";
@@ -32,7 +32,7 @@ export const WIDGET_KEYS: readonly WidgetKey[] = ["locations", "health", "states
 export const SCOPES: readonly ItemScope[] = ["bottles", "bulk", "both"];
 export const UNITS: readonly QuantityUnit[] = ["pieces", "packs"];
 
-export const DEFAULT_WIDGET_PREF: WidgetPref = { scope: "both", unit: "pieces", items: null, places: null };
+export const DEFAULT_WIDGET_PREF: WidgetPref = { scope: "both", unit: "packs", items: null, places: null };
 
 export const DEFAULT_PREFS: DashboardPrefs = {
   locations: { ...DEFAULT_WIDGET_PREF },

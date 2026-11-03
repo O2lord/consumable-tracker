@@ -75,6 +75,9 @@ export function destinationFor(result: CodeLookup, viewer: Viewer): Destination 
         ? { href: `/store/stock-in/delivery/${enc(result.code)}`, label: "Open delivery" }
         : null;
 
+    case "carton":
+      return can(role, "stock_in") ? { href: `/store/stock-in/carton/${enc(result.code)}`, label: "Open carton" } : null;
+
     case "pack":
       return can(role, "stock_in") ? { href: `/store/stock-in/${enc(result.batchCode)}`, label: "Open batch" } : null;
 

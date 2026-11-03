@@ -9,13 +9,14 @@ import { ProgressDonut } from "@/components/ui/ProgressDonut";
 import { inputClass } from "@/components/ui/styles";
 import { partLetter } from "@/lib/part-letter";
 import { describeHolding, isPackUnit } from "@/lib/pack-size";
-import { isValidBatchCode, normalizeCode } from "@/lib/serial";
+import { isValidBatchCode, isValidCartonCode, normalizeCode } from "@/lib/serial";
 import type { FormState } from "@/components/forms/form-state";
 import type { ScanOutcome } from "@/components/scanner/ScanFeedback";
 import type { DispatchBatchInfo, DispatchScanResult } from "@/types/dispatch-scan";
 import {
   lookupBatchAction,
   scanDispatchAction,
+  sendWholeCartonAction,
   sendWholePackAction,
   setQuantityAction,
   undoItemAction,
@@ -36,8 +37,14 @@ interface Props {
 
 const PREVIEW_ROWS = 5;
 
-/** What the last scan meant: a box label means packs are being sent, a pack label on its own means pieces of it. */
-type ScanMode = "packs" | "pieces";
+/**
+ * Where the person is in the box > carton > pack > bottle walk:
+ * - batch: a box label was scanned. If it came in cartons the carton is scanned next.
+ * - carton: a carton label was scanned. Send the whole carton, or choose packs out of it.
+ * - packs: packs are being sent, so each pack label scanned goes on whole.
+ * - pieces: a pack label was scanned on its own. Send the whole pack, or only pieces (bottles) of it.
+ */
+type ScanMode = "batch" | "carton" | "packs" | "pieces";
 
 const textButtonClass = "w-fit text-sm font-medium text-brand underline";
 
@@ -67,25 +74,47 @@ export function DraftBuilder({
 }: Props) {
   // The box or pack scanned last. Bottles are checked against it until the person is done with that box.
   const [active, setActive] = useState<DispatchBatchInfo | null>(null);
-  const [mode, setMode] = useState<ScanMode>("packs");
+  const [mode, setMode] = useState<ScanMode>("batch");
   // Only for stock with no pack labels: which unit the typed quantity is in, whole packs or pieces.
   const [unit, setUnit] = useState<"stock" | "pieces">("stock");
   // Scanning happens in a pop-up so the draft stays tidy: the button below opens it.
   const [scanning, setScanning] = useState(false);
-  // What happened when "Send whole pack" was used, since that does not go through the scan field.
-  const [packNote, setPackNote] = useState<{ text: string; ok: boolean } | null>(null);
+  // What happened when "Send whole pack" or "Send whole carton" was used, since those do not go through the scan field.
+  // `undoId` is set when the send can still be taken back.
+  const [packNote, setPackNote] = useState<{ text: string; ok: boolean; undoId?: string } | null>(null);
+  // True while a whole carton or pack is being added, so a double tap cannot add it twice.
+  const [pending, setPending] = useState(false);
 
   const bottleBatch = active?.trackingMode === "SERIAL" ? active.batchCode : null;
   const bulkBatch = active?.trackingMode === "QUANTITY" ? active : null;
+  // The carton whose label was scanned last, and how many cartons this batch came in.
+  const carton = active?.carton ?? null;
+  const cartonCount = active?.cartonCount ?? 0;
+  const hasCartons = cartonCount > 0;
   // Pieces can be sent only from a pack item whose pack size is known (above 1).
   const piecesOk = bulkBatch ? bulkBatch.packSize > 1 && isPackUnit(bulkBatch.unit) : false;
   // No pack labels on this batch (received before they existed): nothing to scan, so the quantity is typed.
   const typedQuantity = bulkBatch !== null && !bulkBatch.hasPackLabels;
-  // A box label was scanned: packs are being sent, so each pack is scanned onto the draft as one whole pack.
-  const sendingPacks = bulkBatch !== null && bulkBatch.hasPackLabels && mode === "packs";
-  // A pack was scanned on its own: pieces of it are being sent, or the whole pack.
-  const sendingPieces = bulkBatch !== null && bulkBatch.hasPackLabels && mode === "pieces";
-  const scannedPack = sendingPieces ? (bulkBatch?.pack ?? null) : null;
+  // A carton label was scanned and not decided on yet: the whole carton, or packs out of it.
+  const choosingCarton = carton !== null && mode === "carton";
+  // Packs are being sent one by one, so each pack is scanned onto the draft as one whole pack (all its bottles, for bottles).
+  const sendingPacks = active !== null && active.hasPackLabels && mode === "packs";
+  // A pack was scanned on its own (or picked): pieces of it are being sent, or the whole pack.
+  const sendingPieces = active !== null && active.hasPackLabels && mode === "pieces";
+  const scannedPack = sendingPieces ? (active?.pack ?? null) : null;
+  // Sending bottles out of one pack: bottles are checked against this pack until the person picks something else.
+  const activePackCode = sendingPieces && bottleBatch && active?.pack ? active.pack.code : null;
+  // The whole carton can go when nothing has left it and it is not already on the draft.
+  const canSendWholeCarton = carton !== null && carton.intact && carton.onDraft < carton.total;
+  // Each level counts the level below it: a box counts cartons, a carton counts packs, a pack counts bottles.
+  // Only a box with no cartons counts bottles, and a carton with no pack labels does too.
+  const cartonLevel =
+    carton !== null && carton.packLabels > 0
+      ? { done: carton.packsOnDraft, total: carton.packsTotal, noun: carton.packsTotal === 1 ? "pack" : "packs" }
+      : { done: carton?.onDraft ?? 0, total: carton?.total ?? 0, noun: carton?.contents ?? "bottles" };
+  const batchLevel = hasCartons
+    ? { done: active?.cartonsOnDraft ?? 0, total: cartonCount, noun: cartonCount === 1 ? "carton" : "cartons" }
+    : { done: active?.onDraft ?? 0, total: active?.available ?? 0, noun: "bottles" };
   // The quantity form: pieces of the scanned pack, or the typed quantity for stock with no pack labels.
   const piecesForm = scannedPack !== null && piecesOk;
   const formInPieces = piecesForm || (typedQuantity && piecesOk && unit === "pieces");
@@ -98,16 +127,33 @@ export function DraftBuilder({
 
   async function handleScan(value: string): Promise<DispatchScanResult> {
     const isBoxLabel = isValidBatchCode(normalizeCode(value));
+    const isCartonLabel = isValidCartonCode(value);
     setPackNote(null);
-    const result = await scanDispatchAction(transferId, code, value, bottleBatch, sendingPacks);
+    const result = await scanDispatchAction(transferId, code, value, bottleBatch, sendingPacks, activePackCode);
     if (result.batch) {
       setActive(result.batch);
-      // A box label means packs. A pack that went on whole keeps it that way. A pack scanned on its own means pieces.
-      setMode(isBoxLabel || result.undoId?.startsWith("pack:") ? "packs" : "pieces");
+      if (isBoxLabel) {
+        // A box that came in cartons asks for the carton next. One that did not goes straight to scanning its packs.
+        setMode(result.batch.cartonCount > 0 ? "batch" : "packs");
+      } else if (isCartonLabel) {
+        // A carton label asks: the whole carton, or packs out of it.
+        setMode("carton");
+      } else {
+        // A pack that went on whole keeps packs mode. A pack scanned on its own asks: the whole pack, or pieces of it.
+        setMode(result.undoId?.startsWith("pack:") ? "packs" : "pieces");
+      }
       setUnit(result.batch.onDraftPieces > 0 ? "pieces" : "stock");
     } else if (result.batchCount !== undefined) {
       const count = result.batchCount;
-      setActive((prev) => (prev ? { ...prev, onDraft: count } : prev));
+      setActive((prev) => {
+        if (!prev) return prev;
+        // Bottles are only accepted from the open pack, so the pack's count moves by the same amount as the batch's.
+        const pack =
+          prev.pack && activePackCode
+            ? { ...prev.pack, onDraft: Math.max(0, Math.min(prev.pack.piecesPerPack, prev.pack.onDraft + (count - prev.onDraft))) }
+            : prev.pack;
+        return { ...prev, onDraft: count, pack };
+      });
     }
     return result;
   }
@@ -115,21 +161,51 @@ export function DraftBuilder({
   async function handleUndo(itemId: string): Promise<ScanOutcome> {
     const outcome = await undoItemAction(transferId, code, itemId);
     if (outcome.kind !== "error" && active) {
-      const fresh = await lookupBatchAction(transferId, active.batchCode);
+      // Re-read whatever the screen is on (its pack, carton or box), so the counts stay right and the step is kept.
+      const fresh = await lookupBatchAction(transferId, active.pack?.code ?? active.carton?.code ?? active.batchCode);
       if (fresh) setActive(fresh);
     }
     return outcome;
   }
 
-  async function sendWhole(packCode: string) {
+  async function sendWhole(packCode: string, keepGoing = false) {
     setPackNote(null);
+    setPending(true);
     const r = await sendWholePackAction(transferId, code, packCode);
-    setPackNote({ text: r.message, ok: r.kind !== "error" });
-    if (r.kind !== "error") {
+    setPending(false);
+    setPackNote({ text: r.message, ok: r.kind !== "error", undoId: r.kind !== "error" ? r.undoId : undefined });
+    if (r.kind === "error") return;
+    if (keepGoing && r.batch) {
+      // "Send with other packs": this pack is on the draft, and the next pack scanned goes on whole as well.
+      setActive(r.batch);
+      setMode("packs");
+    } else {
       // The pack is on the draft, so the next scan starts fresh.
       setActive(null);
-      setMode("packs");
+      setMode("batch");
     }
+  }
+
+  async function sendWholeCarton(cartonCode: string) {
+    setPackNote(null);
+    setPending(true);
+    const r = await sendWholeCartonAction(transferId, code, cartonCode);
+    setPending(false);
+    setPackNote({ text: r.message, ok: r.kind !== "error", undoId: r.kind !== "error" ? r.undoId : undefined });
+    if (r.kind !== "error") {
+      // The carton is on the draft, so the next scan starts fresh.
+      setActive(null);
+      setMode("batch");
+    }
+  }
+
+  // Takes back a whole pack or carton that was just sent with its button.
+  async function undoNote() {
+    if (!packNote?.undoId) return;
+    setPending(true);
+    const outcome = await undoItemAction(transferId, code, packNote.undoId);
+    setPending(false);
+    setPackNote({ text: outcome.message, ok: outcome.kind !== "error" });
   }
 
   // Once the quantity is saved the form has done its job, so it goes away and only Confirm is left.
@@ -151,11 +227,23 @@ export function DraftBuilder({
     </p>
   ) : null;
 
-  let scanLabel = "Scan a box label, a pack label or a bottle label";
+  let scanLabel = "Scan a box, carton, pack or bottle label";
   if (active) {
-    if (bottleBatch) scanLabel = "Scan the next bottle";
-    else if (sendingPacks) scanLabel = "Scan the next pack or roll";
-    else if (sendingPieces) scanLabel = "Scan the pack the pieces come from";
+    if (choosingCarton) scanLabel = "Choose below, or scan another carton or a pack";
+    else if (sendingPacks) {
+      scanLabel = carton
+        ? "Scan the next pack from this carton"
+        : bottleBatch
+          ? "Scan a pack or the next bottle"
+          : "Scan the next pack or roll";
+    } else if (sendingPieces) {
+      scanLabel = activePackCode
+        ? "Scan the bottles from this pack"
+        : bottleBatch
+          ? "Scan the pack the bottles come from"
+          : "Scan the pack the pieces come from";
+    } else if (hasCartons) scanLabel = "Scan the carton you are sending";
+    else if (bottleBatch) scanLabel = "Scan the next bottle";
     else scanLabel = "Scan another box or bottle label";
   }
 
@@ -179,22 +267,182 @@ export function DraftBuilder({
               <section className="flex flex-col gap-3 rounded-xl border border-line bg-page p-4">
                 <div className="flex flex-wrap items-baseline justify-between gap-x-3 text-sm">
                   <span className="text-zinc-500">
-                    {sendingPieces && active.pack ? "Current pack" : "Current box"} · {active.itemName}
+                    {carton && (choosingCarton || sendingPacks)
+                      ? "Current carton"
+                      : sendingPieces && active.pack
+                        ? "Current pack"
+                        : "Current box"}{" "}
+                    · {active.itemName}
                   </span>
                   <span className="font-mono font-semibold">
-                    {sendingPieces && active.pack ? active.pack.code : active.batchCode}
+                    {carton && (choosingCarton || sendingPacks)
+                      ? carton.code
+                      : sendingPieces && active.pack
+                        ? active.pack.code
+                        : active.batchCode}
                   </span>
                 </div>
-                {active.trackingMode === "SERIAL" ? (
-                  <div className="flex items-center justify-between gap-4">
+                {choosingCarton && carton ? (
+                  <div className="flex flex-col gap-3">
                     <div>
                       <div className="flex items-baseline gap-2">
-                        <span className="text-5xl font-bold leading-none text-brand">{active.onDraft}</span>
-                        <span className="text-base text-zinc-500">of {active.available} bottles scanned</span>
+                        <span className="text-5xl font-bold leading-none text-brand">
+                          {cartonLevel.total.toLocaleString("en-GB")}
+                        </span>
+                        <span className="text-base text-zinc-500">{cartonLevel.noun} in this carton</span>
                       </div>
-                      <p className="mt-2 text-xs text-muted">Part {partLetter(active.partsSent + 1)} if dispatched now</p>
+                      <p className="mt-2 text-xs text-muted">
+                        {carton.packLabels > 0 ? `${carton.total.toLocaleString("en-GB")} ${carton.contents} · ` : ""}
+                        {carton.onDraft === carton.total
+                          ? "The whole carton is already on this draft"
+                          : carton.intact
+                            ? "Nothing has been taken out of it"
+                            : `Only ${carton.avail.toLocaleString("en-GB")} of ${carton.total.toLocaleString("en-GB")} ${carton.contents} are free here, so it cannot go whole`}{" "}
+                        · Part {partLetter(active.partsSent + 1)} if dispatched now
+                      </p>
                     </div>
-                    <ProgressDonut done={active.onDraft} total={active.available} label="bottles scanned" />
+                    <div className="flex flex-wrap items-center gap-2">
+                      {canSendWholeCarton ? (
+                        <button
+                          type="button"
+                          disabled={pending}
+                          onClick={() => sendWholeCarton(carton.code)}
+                          className="rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-brand-ink hover:brightness-95 disabled:opacity-50"
+                        >
+                          Send whole carton
+                        </button>
+                      ) : null}
+                      {carton.packLabels > 0 && carton.onDraft < carton.total ? (
+                        <button
+                          type="button"
+                          onClick={() => setMode("packs")}
+                          className="rounded-lg border border-line bg-surface px-4 py-2 text-sm font-medium hover:bg-brand-soft"
+                        >
+                          Send packs from this carton
+                        </button>
+                      ) : null}
+                    </div>
+                    {carton.packLabels === 0 && !carton.intact ? (
+                      <p className="text-sm text-zinc-500">Scan the bottles you are sending from this carton.</p>
+                    ) : null}
+                  </div>
+                ) : sendingPacks && carton ? (
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-5xl font-bold leading-none text-brand">{cartonLevel.done}</span>
+                          <span className="text-base text-zinc-500">
+                            of {cartonLevel.total.toLocaleString("en-GB")} {cartonLevel.noun} on the draft
+                          </span>
+                        </div>
+                        <p className="mt-2 text-xs text-muted">
+                          Scan each pack you are sending from this carton · Part {partLetter(active.partsSent + 1)} if dispatched now
+                        </p>
+                      </div>
+                      <ProgressDonut done={cartonLevel.done} total={cartonLevel.total} label={`${cartonLevel.noun} on the draft`} />
+                    </div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1">
+                      {canSendWholeCarton ? (
+                        <button type="button" onClick={() => setMode("carton")} className={textButtonClass}>
+                          Send the whole carton instead
+                        </button>
+                      ) : null}
+                      {piecesOk || bottleBatch ? (
+                        <button type="button" onClick={() => setMode("pieces")} className={textButtonClass}>
+                          {bottleBatch ? "Send bottles from a pack instead" : "Send pieces from a pack instead"}
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : sendingPieces && active.trackingMode === "SERIAL" ? (
+                  <div className="flex flex-col gap-3">
+                    {active.pack ? (
+                      <>
+                        <div className="flex items-center justify-between gap-4">
+                          <div>
+                            <div className="flex items-baseline gap-2">
+                              <span className="text-5xl font-bold leading-none text-brand">{active.pack.onDraft}</span>
+                              <span className="text-base text-zinc-500">
+                                of {active.pack.piecesLeft.toLocaleString("en-GB")}{" "}
+                                {active.pack.piecesLeft === 1 ? "bottle" : "bottles"} on the draft
+                              </span>
+                            </div>
+                            <p className="mt-2 text-xs text-muted">
+                              {active.pack.onTransfer
+                                ? "This pack is already on a transfer that has not been received"
+                                : !active.pack.intact
+                                  ? `Only ${active.pack.piecesLeft} of ${active.pack.piecesPerPack} bottles are left, so it can only go bottle by bottle`
+                                  : "Scan the bottles you are sending from this pack"}{" "}
+                              · Part {partLetter(active.partsSent + 1)} if dispatched now
+                            </p>
+                          </div>
+                          <ProgressDonut
+                            done={active.pack.onDraft}
+                            total={active.pack.piecesLeft}
+                            label="bottles on the draft"
+                          />
+                        </div>
+                        {active.pack.intact && !active.pack.onTransfer ? (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={pending}
+                              onClick={() => sendWhole(active.pack!.code)}
+                              className="rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-brand-ink hover:brightness-95 disabled:opacity-50"
+                            >
+                              Send this whole pack
+                            </button>
+                            <button
+                              type="button"
+                              disabled={pending}
+                              onClick={() => sendWhole(active.pack!.code, true)}
+                              className="rounded-lg border border-line bg-surface px-4 py-2 text-sm font-medium hover:bg-brand-soft disabled:opacity-50"
+                            >
+                              Send with other packs
+                            </button>
+                          </div>
+                        ) : null}
+                        {active.pack.intact && !active.pack.onTransfer ? (
+                          <p className="text-xs text-muted">
+                            Or scan only the bottles you are sending from this pack.
+                          </p>
+                        ) : null}
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-base font-medium">Scan the pack the bottles come from</p>
+                        <button type="button" onClick={() => setMode("packs")} className={textButtonClass}>
+                          Back to sending whole packs
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ) : active.trackingMode === "SERIAL" ? (
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-5xl font-bold leading-none text-brand">{batchLevel.done}</span>
+                          <span className="text-base text-zinc-500">
+                            of {batchLevel.total.toLocaleString("en-GB")} {batchLevel.noun} {hasCartons ? "on the draft" : "scanned"}
+                          </span>
+                        </div>
+                        {hasCartons ? (
+                          <p className="mt-2 text-sm font-medium">
+                            Scan the carton you are sending
+                            {active.onDraft > 0 ? ` · ${active.onDraft.toLocaleString("en-GB")} bottles on the draft` : ""}
+                          </p>
+                        ) : null}
+                        <p className="mt-2 text-xs text-muted">Part {partLetter(active.partsSent + 1)} if dispatched now</p>
+                      </div>
+                      <ProgressDonut done={batchLevel.done} total={batchLevel.total} label={`${batchLevel.noun} on the draft`} />
+                    </div>
+                    {hasCartons && active.hasPackLabels && mode === "batch" ? (
+                      <button type="button" onClick={() => setMode("packs")} className={textButtonClass}>
+                        Send packs one by one instead
+                      </button>
+                    ) : null}
                   </div>
                 ) : sendingPacks ? (
                   <div className="flex flex-col gap-3">
@@ -249,6 +497,20 @@ export function DraftBuilder({
                       Send whole packs instead
                     </button>
                   </div>
+                ) : hasCartons && active.hasPackLabels ? (
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-5xl font-bold leading-none text-brand">{batchLevel.done}</span>
+                      <span className="text-base text-zinc-500">
+                        of {batchLevel.total.toLocaleString("en-GB")} {batchLevel.noun} on the draft
+                      </span>
+                    </div>
+                    <p className="text-sm font-medium">Scan the carton you are sending</p>
+                    <p className="text-xs text-muted">Part {partLetter(active.partsSent + 1)} if dispatched now</p>
+                    <button type="button" onClick={() => setMode("packs")} className={textButtonClass}>
+                      Send packs one by one instead
+                    </button>
+                  </div>
                 ) : (
                   <div className="flex flex-col gap-1">
                     <p className="text-base font-medium">No pack labels on this stock: enter the quantity below</p>
@@ -264,17 +526,25 @@ export function DraftBuilder({
               </section>
             ) : (
               <p className="text-sm text-zinc-500">
-                Scan the batch code on the box, then scan each bottle or pack you are sending. To send pieces, scan the
-                pack on its own instead. Bottles scanned without a box are still accepted.
+                Scan the batch code on the box, then the carton you are sending. Send the whole carton, or choose the packs
+                in it. Scan a pack on its own to send it whole or only some pieces. Bottles scanned without a box are
+                still accepted.
               </p>
             )}
 
             <ScanSession compact label={scanLabel} onScan={handleScan} onUndo={handleUndo} />
 
             {packNote ? (
-              <p role="status" className={`text-sm ${packNote.ok ? "text-ok" : "text-bad"}`}>
-                {packNote.text}
-              </p>
+              <div className="flex flex-wrap items-center gap-3">
+                <p role="status" className={`text-sm ${packNote.ok ? "text-ok" : "text-bad"}`}>
+                  {packNote.text}
+                </p>
+                {packNote.undoId ? (
+                  <button type="button" disabled={pending} onClick={undoNote} className={`${textButtonClass} disabled:opacity-50`}>
+                    Undo
+                  </button>
+                ) : null}
+              </div>
             ) : null}
 
             {showForm && bulkBatch ? (
@@ -395,7 +665,7 @@ export function DraftBuilder({
                 type="button"
                 onClick={() => {
                   setActive(null);
-                  setMode("packs");
+                  setMode("batch");
                   setScanning(false);
                 }}
                 className="rounded-lg bg-brand px-5 py-3 text-base font-semibold text-brand-ink hover:brightness-95"

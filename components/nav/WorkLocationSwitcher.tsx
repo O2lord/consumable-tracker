@@ -16,9 +16,28 @@ interface Props {
   setLocationAction: (locationId: string) => Promise<{ error?: string }>;
 }
 
+/** Map pin shown in place of the "Working at" label. Decorative: the control carries its own accessible name. */
+function MapPinIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      className="h-4 w-4 shrink-0 text-muted"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0Z" />
+      <circle cx="12" cy="10" r="3" />
+    </svg>
+  );
+}
+
 /**
- * "Working at": set once here and used on every page (Issue, Return, Void, Used for test, Stock...). Someone locked
- * to their home location sees it as plain text, so they always know where they are working.
+ * The work location: set once here and used on every page (Issue, Return, Void, Used for test, Stock...). Someone locked
+ * to their home location sees it as plain text, so they always know where they are working. A map pin marks it.
  */
 export function WorkLocationSwitcher({ locations, value, currentName, canChoose, setLocationAction }: Props) {
   const [picked, setPicked] = useState(value ?? "");
@@ -34,8 +53,8 @@ export function WorkLocationSwitcher({ locations, value, currentName, canChoose,
 
   if (!canChoose) {
     return (
-      <div className="flex flex-col leading-tight" title="You work at your own location">
-        <span className="text-xs font-normal text-muted">Working at</span>
+      <div className="flex items-center gap-1.5" title="You work at your own location" aria-label={`Working at ${currentName ?? "no location set"}`}>
+        <MapPinIcon />
         <span className="text-sm font-semibold">{currentName ?? "No location set"}</span>
       </div>
     );
@@ -55,16 +74,20 @@ export function WorkLocationSwitcher({ locations, value, currentName, canChoose,
 
   return (
     <div className={`flex flex-col gap-0.5 ${pending ? "opacity-60" : ""}`} aria-busy={pending}>
-      <span className="text-xs font-normal text-muted">Working at</span>
-      <div className="w-56 max-w-full">
-        <Select
-          name="workLocation"
-          ariaLabel="Working at"
-          value={picked}
-          placeholder="Choose where you work"
-          options={locations.map((l) => ({ value: l.id, label: l.name }))}
-          onChange={choose}
-        />
+      <div className="flex items-center gap-2">
+        <span title="Working at">
+          <MapPinIcon />
+        </span>
+        <div className="w-fit max-w-full">
+          <Select
+            name="workLocation"
+            ariaLabel="Working at"
+            value={picked}
+            placeholder="Choose where you work"
+            options={locations.map((l) => ({ value: l.id, label: l.name }))}
+            onChange={choose}
+          />
+        </div>
       </div>
       {error ? (
         <span role="alert" className="text-xs text-bad">

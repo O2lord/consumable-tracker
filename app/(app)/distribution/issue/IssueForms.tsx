@@ -8,6 +8,7 @@ import { ScanField } from "@/components/scanner/ScanField";
 import { Field } from "@/components/ui/Field";
 import { Select } from "@/components/ui/Dropdown";
 import { Modal } from "@/components/ui/Modal";
+import { DistributionTabs } from "@/components/nav/DistributionTabs";
 import { DialogToast } from "@/components/ui/DialogToast";
 import { playScanTone } from "@/components/scanner/ScanFeedback";
 import { buttonClass, ghostButtonClass, inputClass } from "@/components/ui/styles";
@@ -690,6 +691,7 @@ export function IssueForms({ header, workLocationId, workServiceRole, canOverrid
           </button>
         </div>
       </div>
+      <DistributionTabs />
 
       {notice ? (
         <p role="status" className="rounded-xl border border-ok bg-surface px-4 py-3 text-sm text-ok">

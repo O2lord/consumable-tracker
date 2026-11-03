@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { EXTERNAL_SYSTEMS, LOCATION_TYPES, PACK_SIZE_MAX, SERVICE_ROLES, TRACKING_MODES } from "../server/domain/types";
 import { PERMISSIONS } from "../server/auth/permissions";
+import { isValidItemCode } from "../lib/serial";
 
 // Validation for the admin screens. Shared by the forms (server actions) and the services.
 // Codes are stored upper-case so "lab-1" and "LAB-1" cannot both exist.
@@ -12,6 +13,20 @@ const code = z
   .regex(/^[A-Z0-9][A-Z0-9_-]{1,29}$/, "Use 2 to 30 letters, digits, hyphens or underscores");
 
 const name = z.string().trim().min(1, "Required").max(120);
+
+/**
+ * An item's label code: two letters that start its bottles' serials (PT for a plain tube). Blank means "choose one for
+ * me". No I, L, O or U, and not CT, BT, DV, PK or CN, which already mean something.
+ */
+const labelCode = z.preprocess(
+  (v) => (v === "" || v === null || v === undefined ? undefined : v),
+  z
+    .string()
+    .trim()
+    .toUpperCase()
+    .refine(isValidItemCode, "Use 2 letters, not I, L, O or U, and not CT, BT, DV, PK or CN")
+    .optional(),
+);
 
 // --- locations ---------------------------------------------------------------
 export const locationInputSchema = z.object({
@@ -33,6 +48,7 @@ export type LocationUpdate = z.infer<typeof locationUpdateSchema>;
 export const itemTypeInputSchema = z.object({
   code,
   name,
+  labelCode,
   category: z
     .string()
     .trim()
@@ -53,8 +69,21 @@ export const itemTypeInputSchema = z.object({
   packSize: z.coerce.number().int().min(1).max(PACK_SIZE_MAX).default(1),
   /** Ticked once someone has checked the pack size with the lab. */
   packSizeConfirmed: z.boolean().default(false),
+  /** Packs (bags, rolls, bottles) in one carton as delivered. Left empty when the item has no carton size. */
+  packsPerCarton: z.preprocess(
+    (v) => (v === "" || v === null || v === undefined ? undefined : v),
+    z.coerce.number().int().min(1).max(PACK_SIZE_MAX).optional(),
+  ),
   /** Display only: shows a "Keep cold" tag. It blocks nothing. */
   coldStorage: z.boolean().default(false),
+  /**
+   * Reagents: how many tests one container covers. Left empty for items not counted in tests. When set, the item is
+   * a quantity item recorded by tests done under Used for test, and its pack size is kept equal to this.
+   */
+  testsPerUnit: z.preprocess(
+    (v) => (v === "" || v === null || v === undefined ? undefined : v),
+    z.coerce.number().int().min(1).max(PACK_SIZE_MAX).optional(),
+  ),
   /** A shared bench supply: issued in bulk and counted, never listed against a test or a patient. */
   benchSupply: z.boolean().default(false),
 });

@@ -105,6 +105,14 @@ export const EVENT_TYPES = [
   "WRITTEN_OFF",
   // A sealed pack opened so loose pieces can be sent from it (quantity = packs opened, pieces = their pieces).
   "OPENED",
+  // A conversion (concentrate into a dilute solution): the input leaves the shelf, the output arrives on it against a
+  // new batch. Both use the quantity / pieces split like USED. Not "used" and not "issued": nothing is owed back.
+  "CONVERTED_OUT",
+  "CONVERTED_IN",
+  // Voiding a conversion: the input goes back on the shelf (reverses CONVERTED_OUT), the output comes off it (reverses
+  // CONVERTED_IN). New events, never edits to the originals.
+  "CONVERTED_OUT_VOIDED",
+  "CONVERTED_IN_VOIDED",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -142,6 +150,16 @@ export type DiscrepancyResolution = (typeof DISCREPANCY_RESOLUTIONS)[number];
 /** transfer_items.resolution: SPLIT means a quantity item was partly found and partly written off. */
 export const ITEM_RESOLUTIONS = ["FOUND", "WRITTEN_OFF", "SPLIT"] as const;
 export type ItemResolution = (typeof ITEM_RESOLUTIONS)[number];
+
+// --- Lab conversions --------------------------------------------------------------
+
+/** conversion_lines.direction: a batch taken as input, or the batch made as output. */
+export const CONVERSION_DIRECTIONS = ["INPUT", "OUTPUT"] as const;
+export type ConversionDirection = (typeof CONVERSION_DIRECTIONS)[number];
+
+/** Bounds for conversion_recipes.input_amount, output_amount and shelf_life_days. */
+export const CONVERSION_AMOUNT_MAX = 1_000_000;
+export const CONVERSION_SHELF_LIFE_MAX_DAYS = 3650;
 
 /** The person doing something. A session satisfies this, so services never import session code. */
 export interface Actor {

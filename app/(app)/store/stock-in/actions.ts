@@ -8,34 +8,24 @@ import { listActiveItemTypes } from "@/server/services/catalog.service";
 import { createDelivery } from "@/server/services/delivery.service";
 import { toFormError } from "@/server/actions/form-result";
 import { formDataToObject, issuesToMessage } from "@/lib/form";
-import { canSwitchUnit, isPackUnit, isPieceUnit, toStockQuantity } from "@/lib/pack-size";
+import { RECEIVE_ENTRIES, type ReceiveEntry } from "@/lib/pack-size";
 import { stockInInputSchema, type StockInInput } from "@/types/stock-in";
 import type { FormState } from "@/components/forms/form-state";
+
+/** What the form says a quantity was counted in. Anything else (or nothing) means the item's own unit. */
+function entryOf(value: unknown): ReceiveEntry | undefined {
+  return RECEIVE_ENTRIES.find((e) => e === value);
+}
 
 export async function stockInAction(_prev: FormState, formData: FormData): Promise<FormState> {
   const session = await requirePermission("stock_in");
 
   const raw = formDataToObject(formData);
-  const parsed = stockInInputSchema.safeParse({ ...raw, quantity: Number(raw.quantity) });
+  // The service turns cartons or packs into the item's own unit and refuses what does not fit (no carton size, pieces
+  // that are not whole packs, too many labels), so the same rules apply here and in a delivery.
+  const parsed = stockInInputSchema.safeParse({ ...raw, quantity: Number(raw.quantity), entry: entryOf(raw.entryUnit) });
   if (!parsed.success) return { error: issuesToMessage(parsed.error) };
-
-  // A bulk pack item can be counted in pieces. The ledger counts whole packs, so pieces must come to whole packs.
-  let input = parsed.data;
-  if (raw.entryUnit === "alt") {
-    const items = await listActiveItemTypes();
-    const item = items.find((i) => i.id === input.itemTypeId);
-    if (!item) return { error: "That item type is not available" };
-    if (item.trackingMode !== "QUANTITY" || !(isPackUnit(item.unitOfMeasure) || isPieceUnit(item.unitOfMeasure))) {
-      return { error: "This item can only be received in its own unit" };
-    }
-    if (!canSwitchUnit(item.unitOfMeasure, item.packSize)) {
-      return { error: "This item has no pack size set, so it can only be received in its own unit" };
-    }
-    const converted = toStockQuantity(input.quantity, "alt", item.unitOfMeasure, item.packSize);
-    if ("error" in converted) return { error: converted.error };
-    input = { ...input, quantity: converted.quantity };
-  }
-
+  const input = parsed.data;
   let batchCode: string;
   try {
     const result = await stockIn(input, session.userId);
@@ -82,23 +72,10 @@ export async function stockInManyAction(_prev: FormState, formData: FormData): P
       lotNo: lots[i]?.trim() || undefined,
       expiryDate: expiries[i] || undefined,
       supplier: supplier || undefined,
+      entry: entryOf(entryUnits[i]),
     });
     if (!parsed.success) return { error: `${item.name}: ${issuesToMessage(parsed.error)}` };
-
-    let input = parsed.data;
-    // A bulk pack item can be counted in pieces. The ledger counts whole packs, so pieces must come to whole packs.
-    if (entryUnits[i] === "alt") {
-      if (item.trackingMode !== "QUANTITY" || !(isPackUnit(item.unitOfMeasure) || isPieceUnit(item.unitOfMeasure))) {
-        return { error: `${item.name} can only be received in its own unit` };
-      }
-      if (!canSwitchUnit(item.unitOfMeasure, item.packSize)) {
-        return { error: `${item.name} has no pack size set, so it can only be received in its own unit` };
-      }
-      const converted = toStockQuantity(input.quantity, "alt", item.unitOfMeasure, item.packSize);
-      if ("error" in converted) return { error: `${item.name}: ${converted.error}` };
-      input = { ...input, quantity: converted.quantity };
-    }
-    inputs.push(input);
+    inputs.push(parsed.data);
   }
 
   let deliveryCode: string;

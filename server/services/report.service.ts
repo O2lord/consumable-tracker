@@ -29,9 +29,15 @@ export interface ReconciliationRow {
   issued: number;
   /** Stock the lab recorded as used at the bench (Used for test) in the period. */
   used: number;
+  /** Sealed packs opened in the period (to take loose pieces from, by Used for test or a conversion). */
+  opened: number;
   returnedUsed: number;
   restocked: number;
   voidedOrWasted: number;
+  /** Stock taken off the shelf by a lab conversion in the period (whole units; loose pieces show as opened packs). */
+  convertedOut: number;
+  /** Stock a lab conversion made onto the shelf in the period. */
+  convertedIn: number;
   missing: number;
   closing: number;
   onHandNow: number;
@@ -58,9 +64,12 @@ interface ReconciliationDbRow extends Record<string, unknown> {
   dispatched: number;
   issued: number;
   used: number;
+  opened: number;
   returned_used: number;
   restocked: number;
   voided_or_wasted: number;
+  converted_out: number;
+  converted_in: number;
   missing: number;
   closing: number;
   on_hand_now: number;
@@ -120,9 +129,12 @@ export async function getReconciliation(
       dispatched: r.dispatched,
       issued: r.issued,
       used: r.used,
+      opened: Number(r.opened ?? 0),
       returnedUsed: r.returned_used,
       restocked: r.restocked,
       voidedOrWasted: r.voided_or_wasted,
+      convertedOut: Number(r.converted_out ?? 0),
+      convertedIn: Number(r.converted_in ?? 0),
       missing: r.missing,
       closing: r.closing,
       onHandNow: r.on_hand_now,

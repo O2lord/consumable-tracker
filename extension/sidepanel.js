@@ -397,7 +397,7 @@ async function pullRows() {
   }
   renderGate();
   if (state.lookup) renderLookup();
-  syncQueue();
+  await syncQueue();
 }
 
 const SYNC_NOTE = {
@@ -1487,6 +1487,26 @@ function fmtTime(value) {
 
 const withBy = (time, by) => fmtTime(time) + (by ? ` by ${by}` : "");
 
+/**
+ * Look up screen's Refresh: read the portal tab again, send what it shows to the tracker (status, invoice, progress),
+ * then fetch the same bottle again so the cards show the update. The server's copy of the portal status is only as
+ * fresh as the last sync, so a lookup alone can show it as not recorded.
+ */
+async function refreshLookup() {
+  const serial = state.lookup && state.lookup.unit && state.lookup.unit.serial;
+  if (!serial || state.busy) return;
+  showBusy("Updating from the portal…");
+  try {
+    activeRefs = { at: 0, set: new Set() }; // forget the 30 second cache so a bottle linked a moment ago is included
+    await readActiveTab();
+    await pullRows();
+    for (let i = 0; i < 50 && state.syncing; i += 1) await new Promise((r) => setTimeout(r, 100));
+  } finally {
+    hideBusy();
+  }
+  await lookupBottle(serial);
+}
+
 async function lookupBottle(serial) {
   if (state.busy) return;
   state.busy = true;
@@ -1603,6 +1623,7 @@ function testCard(t) {
 
 function renderLookup() {
   const b = state.lookup;
+  $("lookup-refresh").hidden = !b;
   const card = $("lookup-card");
   const tests = $("lookup-tests");
   const journey = $("lookup-journey");
@@ -1964,6 +1985,7 @@ function wire() {
   $("settings-back").addEventListener("click", () => (state.tokens ? enterMain() : showLogin()));
   $("signout").addEventListener("click", logout);
   $("refresh-page").addEventListener("click", () => readPage());
+  $("lookup-refresh").addEventListener("click", () => refreshLookup());
 
   $("tab-issue").addEventListener("click", () => setMode("issue"));
   $("tab-return").addEventListener("click", () => setMode("return"));

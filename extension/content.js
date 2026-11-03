@@ -322,9 +322,11 @@
 
   // --- forward scanner input ----------------------------------------------------------------------
   // A barcode scanner types like a very fast keyboard and ends with Enter. When nothing editable on the
-  // portal has focus, a burst that looks like one of our bottle serials (CT + 9 characters) goes to the panel.
+  // portal has focus, a burst that looks like one of our bottle serials (two letters for the item, such as PT, then
+  // 9 characters) goes to the panel. Carton, pack, batch, delivery, transfer and request codes have their own
+  // prefixes (CN, PK, BT, DV, TRF, REQ), so they are left alone.
 
-  const SERIAL_LIKE = /^CT[0-9A-Z-]{9,12}$/i;
+  const SERIAL_LIKE = /^(?!PK|CN|BT|DV|TRF|REQ)[A-Z0-9]{2}[0-9A-Z-]{9,12}$/i;
   let buffer = "";
   let lastKey = 0;
 

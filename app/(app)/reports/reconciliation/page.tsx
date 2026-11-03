@@ -47,7 +47,9 @@ export default async function ReconciliationPage({
           For each location and item: what was on the shelf at the start, what came in and went out during the period,
           and what is there at the end. Everything is worked out from the ledger. Unaccounted is the units actually in
           stock now minus what the ledger says should be there; it should always be 0. Bulk items have no separate count
-          to compare with, so they show n/a.
+          to compare with, so they show n/a. Stock counted in loose pieces, such as millilitres from a 1 L bottle, comes
+          from a sealed pack that is opened first, so Packs opened shows those packs. Lab conversions have their own two
+          columns: what a conversion took off the shelf (whole units) and what it made.
         </p>
       </div>
 
@@ -102,9 +104,12 @@ export default async function ReconciliationPage({
               <th className={thClass}>Dispatched</th>
               <th className={thClass}>Issued</th>
               <th className={thClass}>Used at bench</th>
+              <th className={thClass}>Packs opened</th>
               <th className={thClass}>Returned used</th>
               <th className={thClass}>Restocked</th>
               <th className={thClass}>Voided / wasted</th>
+              <th className={thClass}>Taken for conversion</th>
+              <th className={thClass}>Made by conversion</th>
               <th className={thClass}>Missing</th>
               <th className={thClass}>End</th>
               <th className={thClass}>Unaccounted</th>
@@ -128,9 +133,12 @@ export default async function ReconciliationPage({
                 <td className={tdClass}>{r.dispatched}</td>
                 <td className={tdClass}>{r.issued}</td>
                 <td className={tdClass}>{r.used}</td>
+                <td className={tdClass}>{r.opened}</td>
                 <td className={tdClass}>{r.returnedUsed}</td>
                 <td className={tdClass}>{r.restocked}</td>
                 <td className={tdClass}>{r.voidedOrWasted}</td>
+                <td className={tdClass}>{r.convertedOut}</td>
+                <td className={tdClass}>{r.convertedIn}</td>
                 <td className={tdClass}>{r.missing}</td>
                 <td className={tdClass}>
                   {r.closing}
@@ -149,7 +157,7 @@ export default async function ReconciliationPage({
             ))}
             {rows.length === 0 ? (
               <tr>
-                <td className={tdClass} colSpan={15}>
+                <td className={tdClass} colSpan={18}>
                   No movements recorded.
                 </td>
               </tr>

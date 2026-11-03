@@ -34,14 +34,17 @@ export default async function StockInPage({
   const deliveries = deliveryPage.rows;
   const legacyBatches = legacyPage.rows;
   const stores = locations.filter((l) => l.type === "STORE");
+  // Deliveries arrive at the main store, so that is the default. Fall back to the person's own store, then the first.
+  const mainStore = stores.find((s) => s.code === "MAIN-STORE" || s.name.trim().toLowerCase() === "main store");
   const homeStore = stores.find((s) => s.id === session.homeLocationId);
+  const defaultStore = mainStore ?? homeStore;
 
   const header = (
     <>
       <h1 className={pageTitleClass}>Stock in</h1>
       <p className={pageSubtitleClass}>
-        Record a delivery. Bottles get their own barcode labels; bulk items get one label for the whole batch. Count
-        packs or pieces, whichever the delivery note says.
+        Record a delivery. Count it in cartons, packs or pieces, whichever the delivery note says. Cartons, packs and
+        bottles each get their own barcode label; bulk items also get one label for the whole batch.
       </p>
     </>
   );
@@ -70,9 +73,11 @@ export default async function StockInPage({
             unit: i.unitOfMeasure,
             packSize: i.packSize,
             packSizeConfirmed: i.packSizeConfirmed,
+            packsPerCarton: i.packsPerCarton,
+            testsPerUnit: i.testsPerUnit,
           }))}
           stores={stores.map((s) => ({ id: s.id, name: s.name }))}
-          defaultStoreId={homeStore?.id}
+          defaultStoreId={defaultStore?.id}
         />
       )}
 

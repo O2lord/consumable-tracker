@@ -24,6 +24,11 @@ export interface SlipData {
   serialCount: number;
   /** Bulk items in total: counted on arrival. Lines counted in loose pieces are in `pieceTotal`. */
   quantityTotal: number;
+  /**
+   * What the transfer holds in the biggest whole units: a whole delivery, else whole batches, cartons or packs, else
+   * bottles. When it is missing (or all zero) the slip falls back to "N items in total".
+   */
+  contents?: SlipContents;
   /** Loose pieces in total, counted on arrival. Kept apart because pieces and whole units cannot be added. */
   pieceTotal?: number;
   note: string | null;
@@ -32,6 +37,20 @@ export interface SlipData {
    * quantity, so bulk counts stay blind at the destination.
    */
   parts?: { batchCode: string; letter: string }[];
+  /**
+   * Lettered parts of the cartons (split by packs) and packs (split by bottles) on this transfer. Codes and letters
+   * only, never a quantity. A carton or pack that goes whole has no entry here.
+   */
+  containerParts?: { level: "carton" | "pack"; code: string; letter: string }[];
+}
+
+/** Same shape as TransferContents in the transfer service (this file does not import server code). */
+export interface SlipContents {
+  deliveries: number;
+  batches: number;
+  cartons: number;
+  packs: number;
+  bottles: number;
 }
 
 /** Helvetica in pdf-lib only draws Latin-1; anything else would throw, so swap it for "?". */
@@ -86,17 +105,46 @@ export async function renderSlipPdf(slip: SlipData): Promise<Uint8Array> {
 
   const total = slip.serialCount + slip.quantityTotal;
   const pieces = slip.pieceTotal ?? 0;
+  // Biggest whole units first: delivery, batch (box), carton, pack, then loose bottles.
+  const c = slip.contents;
+  const levels: [number, string, string][] = c
+    ? ([
+        [c.deliveries, "delivery", "deliveries"],
+        [c.batches, "batch", "batches"],
+        [c.cartons, "carton", "cartons"],
+        [c.packs, "pack", "packs"],
+        [c.bottles, "bottle", "bottles"],
+      ] as [number, string, string][]).filter(([n]) => n > 0)
+    : [];
+  const hasHeadline = levels.length > 0 || total > 0;
   line("Expected in this transfer", 8, regular, 1);
-  if (total > 0 || pieces === 0) line(`${total} item${total === 1 ? "" : "s"} in total`, 14, bold, 3);
-  if (pieces > 0) line(`${total > 0 ? "plus " : ""}${pieces.toLocaleString("en-GB")} loose piece${pieces === 1 ? "" : "s"}`, total > 0 ? 11 : 14, bold, 3);
-  if (slip.serialCount > 0) line(`${slip.serialCount} serialized (scan each one)`, 10, regular, 2);
+  if (levels.length > 0) {
+    levels.forEach(([n, one, many], i) =>
+      line(`${i > 0 ? "plus " : ""}${n.toLocaleString("en-GB")} ${n === 1 ? one : many}`, i === 0 ? 14 : 11, bold, 3),
+    );
+  } else if (total > 0 || pieces === 0) {
+    line(`${total} item${total === 1 ? "" : "s"} in total`, 14, bold, 3);
+  }
+  if (pieces > 0) line(`${hasHeadline ? "plus " : ""}${pieces.toLocaleString("en-GB")} loose piece${pieces === 1 ? "" : "s"}`, hasHeadline ? 11 : 14, bold, 3);
+  if (slip.serialCount > 0) {
+    // Loose bottles only: the headline already says how many, so just say how they are checked.
+    const onlyBottles = levels.length === 1 && levels[0][1] === "bottle";
+    line(onlyBottles ? "Scan each bottle" : `${slip.serialCount} bottles in all (scan each one)`, 10, regular, 2);
+  }
   if (slip.quantityTotal > 0) line(`${slip.quantityTotal} bulk (count each batch)`, 10, regular, pieces > 0 ? 2 : 8);
   if (pieces > 0) line(`${pieces.toLocaleString("en-GB")} pieces (count the pieces in each batch)`, 10, regular, 8);
 
-  if (slip.parts && slip.parts.length > 0) {
-    line("Batch parts", 8, regular, 1);
-    for (const p of slip.parts.slice(0, 8)) line(`${p.batchCode}  part ${p.letter}`, 10, regular, 2);
-    if (slip.parts.length > 8) line(`and ${slip.parts.length - 8} more`, 9, regular, 2);
+  // Only the level one step above what was sent is named: bottles from a pack -> the pack's part, packs from a
+  // carton -> the carton's part, whole cartons -> the batch's part. A split pack also touches its carton and batch, so
+  // the lowest level that has parts wins and the levels above it stay off the slip.
+  const packLines = (slip.containerParts ?? []).filter((p) => p.level === "pack").map((p) => ({ code: p.code, letter: p.letter }));
+  const cartonLines = (slip.containerParts ?? []).filter((p) => p.level === "carton").map((p) => ({ code: p.code, letter: p.letter }));
+  const batchLines = (slip.parts ?? []).map((p) => ({ code: p.batchCode, letter: p.letter }));
+  const partLines = packLines.length > 0 ? packLines : cartonLines.length > 0 ? cartonLines : batchLines;
+  if (partLines.length > 0) {
+    line("Parts", 8, regular, 1);
+    for (const p of partLines.slice(0, 8)) line(`${p.code}  part ${p.letter}`, 10, regular, 2);
+    if (partLines.length > 8) line(`and ${partLines.length - 8} more`, 9, regular, 2);
     y -= 6;
   }
 

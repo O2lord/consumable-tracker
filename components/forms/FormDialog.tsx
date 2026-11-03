@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 import { Modal } from "@/components/ui/Modal";
+import { DistributionTabs } from "@/components/nav/DistributionTabs";
 import { buttonClass, ghostButtonClass } from "@/components/ui/styles";
 
 interface DialogControl {
@@ -80,6 +81,7 @@ export function FormDialogGroup({ header, dialogs }: GroupProps) {
           ))}
         </div>
       </div>
+      <DistributionTabs />
 
       {active ? (
         <Modal title={active.title ?? active.buttonLabel} wide={active.wide} onClose={() => setOpenIndex(null)}>

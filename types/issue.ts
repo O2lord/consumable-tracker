@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { parseContainerList } from "../lib/containers";
+import { USAGE_REASON_CODES } from "../lib/usage-reasons";
 import {
   COLLECTOR_TYPES,
   ISSUE_RULES,
@@ -201,12 +202,39 @@ export const consumptionIssueSchema = z.object({
 export type ConsumptionIssueInput = z.infer<typeof consumptionIssueSchema>;
 
 /**
+ * One line of a reagent counted in tests. `accounted` is the part of the container that was not patient tests, each
+ * with a reason (10 for quality control). `finished` says the container is empty: whatever is left of it must then be
+ * accounted for, so nothing is left unexplained.
+ */
+const accountedLine = z
+  .object({
+    reason: z.enum(USAGE_REASON_CODES, { message: "Choose a reason" }),
+    quantity: itemQuantity,
+    note: z.string().trim().max(120, "Keep the note under 120 characters").optional(),
+  })
+  .refine((l) => l.reason !== "OTHER" || Boolean(l.note), {
+    message: "Say why in the note when the reason is Other",
+    path: ["note"],
+  });
+
+const usageLine = z.object({
+  itemTypeId: z.uuid(),
+  /** Items counted in the item's own unit or in pieces need at least 1. A reagent counted in tests may be 0 when only accounted lines are entered. */
+  quantity: z.coerce.number().int("Enter a whole number").min(0, "Enter a whole number").max(100000, "That quantity is too large"),
+  accounted: z.array(accountedLine).max(8, "At most 8 reasons per item").default([]),
+  finished: z.boolean().default(false),
+  /** Reagents counted in tests only: the PK labels of the containers opened by this entry, in the order they were opened. */
+  containerCodes: z.array(z.string().trim().min(1).max(40)).max(20, "At most 20 containers per item").default([]),
+});
+
+/**
  * Used for test: what the lab used at the bench, entered by the lab (often at the end of the day). There is no
  * patient. Each line is an item and how much of it was used: loose pieces for a pack item ("10 AHG"), the item's
- * own unit otherwise ("1 pack cotton wool"). The service accepts bench supplies only.
+ * own unit otherwise ("1 pack cotton wool"), or tests done for a reagent counted in tests. The service accepts bench
+ * supplies and reagents counted in tests only.
  */
 export const labUsageSchema = z.object({
-  items: z.array(itemLine).min(1, "Add at least one item").max(40, "At most 40 items").superRefine(noRepeatedItems),
+  items: z.array(usageLine).min(1, "Add at least one item").max(40, "At most 40 items").superRefine(noRepeatedItems),
   /** The day it was used (YYYY-MM-DD). Left out means today. It can be earlier, so a missed day is filled in later. */
   usedOn: z
     .string()
@@ -217,4 +245,4 @@ export const labUsageSchema = z.object({
   section: z.string().trim().max(60).optional(),
   locationId: z.uuid().optional(),
 });
-export type LabUsageInput = z.infer<typeof labUsageSchema>;
+export type LabUsageInput = z.input<typeof labUsageSchema>;

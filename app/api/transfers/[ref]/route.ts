@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { apiFailure, guard } from "@/server/auth/api-guard";
 import { worksAtOwnLocationOnly } from "@/server/auth/permissions";
-import { getTransferDetail } from "@/server/services/transfer.service";
+import { describeTransferContents, getTransferDetail } from "@/server/services/transfer.service";
 import { renderSlipPdf, renderTransferLabelPdf } from "@/lib/slip-pdf";
 
 // GET /api/transfers/<code or id>              -> the transfer with its items (JSON)
@@ -48,17 +48,22 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       if (transfer.status === "DRAFT" || transfer.status === "CANCELLED") {
         return NextResponse.json({ error: "The slip is available once the transfer is dispatched" }, { status: 409 });
       }
+      // Computed here, not in getTransferDetail, so the JSON response (blind for distributors) never carries it.
+      const contents = await describeTransferContents(transfer.id);
       const bytes = await renderSlipPdf({
         code: transfer.code,
         fromName: detail.fromName,
         toName: detail.toName,
         dispatchedAt: transfer.dispatchedAt,
         dispatchedByName: detail.dispatchedByName,
+        carriedByName: transfer.carriedByName,
         serialCount: detail.totals.serialCount,
         quantityTotal: detail.totals.quantityTotal,
         pieceTotal: detail.totals.pieceTotal,
+        contents,
         note: transfer.note,
         parts: detail.parts.map((p) => ({ batchCode: p.batchCode, letter: p.letter })),
+        containerParts: detail.containerParts.map((p) => ({ level: p.level, code: p.code, letter: p.letter })),
       });
       return new Response(bytes as unknown as BodyInit, {
         headers: {

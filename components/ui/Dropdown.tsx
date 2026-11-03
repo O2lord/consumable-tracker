@@ -520,6 +520,8 @@ interface ComboboxProps {
   ariaLabel?: string;
   /** Soft-keyboard capitalisation hint, for example "characters" for codes. */
   autoCapitalize?: string;
+  /** Called with the text each time it changes, whether typed or picked from the list. */
+  onValueChange?: (value: string) => void;
 }
 
 /** A text box with a styled list of suggestions underneath. The person can pick one or type their own value. */
@@ -533,6 +535,7 @@ export function Combobox({
   wrapperClassName,
   ariaLabel,
   autoCapitalize,
+  onValueChange,
 }: ComboboxProps) {
   const [value, setValue] = useState(defaultValue ?? "");
   const [open, setOpen] = useState(false);
@@ -548,6 +551,7 @@ export function Combobox({
 
   const choose = (option: string) => {
     setValue(option);
+    onValueChange?.(option);
     setOpen(false);
   };
 
@@ -581,6 +585,7 @@ export function Combobox({
           autoComplete="off"
           onChange={(event) => {
             setValue(event.target.value);
+            onValueChange?.(event.target.value);
             setActive(-1);
             setOpen(true);
           }}
