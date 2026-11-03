@@ -86,6 +86,21 @@ const isScannerDevice = (d: UsbDeviceLike) => {
   return !!saved && d.vendorId === saved.v && d.productId === saved.p;
 };
 
+// Turns the browser's raw error into something a person can act on, keeping the original text in brackets.
+const explainError = (err: unknown): string => {
+  const raw = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  if (/claim ?interface|unable to claim/i.test(raw)) {
+    return `The scanner was found, but another app or tab is holding it. Unplug the scanner, plug it back in, close other tabs of this site, then tap Connect scanner again. (${raw})`;
+  }
+  if (/no compatible devices|NotFoundError/i.test(raw)) {
+    return `No scanner was found. Check that it is plugged in and in USB serial (CDC) mode. (${raw})`;
+  }
+  if (/SecurityError|NotAllowedError|access denied/i.test(raw)) {
+    return `Permission to use the scanner was refused. Allow USB access when Chrome asks. (${raw})`;
+  }
+  return raw;
+};
+
 // If a scanner is set to send no terminator, a code that has stopped arriving for this long is complete.
 const IDLE_FLUSH_MS = 120;
 const OPEN_RETRIES = 5;
@@ -216,7 +231,7 @@ export function useSerialScanner(onScan: (value: string) => void | Promise<void>
           window.setTimeout(() => void run(open, attempt + 1), 500);
         } else if (!disposed) {
           setSerialBusy(true);
-          setSerialError(err instanceof Error ? `${err.name}: ${err.message}` : String(err));
+          setSerialError(explainError(err));
         }
         return;
       }
@@ -307,7 +322,7 @@ export function useSerialScanner(onScan: (value: string) => void | Promise<void>
       } catch (err) {
         // The person closed the picker without choosing a device: nothing to report. Anything else is shown.
         if (!(err instanceof Error) || err.name !== "NotFoundError") {
-          setSerialError(err instanceof Error ? `${err.name}: ${err.message}` : String(err));
+          setSerialError(explainError(err));
         }
       }
     };
