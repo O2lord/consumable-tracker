@@ -209,11 +209,9 @@ export function useSerialScanner(onScan: (value: string) => void | Promise<void>
   const connectRef = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
-    // On a phone or tablet, Chrome's Web Serial picker often lists nothing for this scanner while WebUSB sees it
-    // (the label printer picker does), so touch screens read it through WebUSB first.
-    const usbApi = getUsb();
-    const serial = isTouchScreen() && usbApi ? undefined : getSerial();
-    const usb = serial ? undefined : usbApi;
+    // Web Serial is used wherever the browser has it (including Chrome on Android); WebUSB only as a fallback.
+    const serial = getSerial();
+    const usb = serial ? undefined : getUsb();
     if (!serial && !usb) return;
 
     let disposed = false;
