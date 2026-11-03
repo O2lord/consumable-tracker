@@ -68,7 +68,6 @@ const serialSupported = () => getSerial() !== undefined || getUsb() !== undefine
 // device picker lists only the scanner and not every serial port or USB device.
 const SCANNER_VENDOR = 0x04d8;
 const SCANNER_PRODUCT = 0x000a;
-const SCANNER_FILTERS = [{ usbVendorId: SCANNER_VENDOR, usbProductId: SCANNER_PRODUCT }];
 const SCANNER_USB_FILTERS = [{ vendorId: SCANNER_VENDOR, productId: SCANNER_PRODUCT }];
 const isScannerDevice = (d: UsbDeviceLike) => d.vendorId === SCANNER_VENDOR && d.productId === SCANNER_PRODUCT;
 
@@ -278,7 +277,8 @@ export function useSerialScanner(onScan: (value: string) => void | Promise<void>
         // A scanner already allowed for this site is reopened without the browser's device picker.
         if (serial) {
           const paired = await serial.getPorts();
-          const port = paired[0] ?? (await serial.requestPort({ filters: SCANNER_FILTERS }));
+          // No filter: the scanner's USB IDs vary by model, and a wrong filter made the picker say "No compatible devices found".
+          const port = paired[0] ?? (await serial.requestPort());
           void run(openSerial(port));
         } else if (usb) {
           const paired = (await usb.getDevices()).find(isScannerDevice);
