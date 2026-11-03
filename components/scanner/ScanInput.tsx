@@ -28,24 +28,32 @@ const BORDER: Record<ScanStatus, string> = {
  * Captures a barcode scanner and offers the device camera as a stand-in when there is no scanner.
  *
  * Two scanner paths, both feeding onScan:
- *  - USB keyboard mode: the scanner types the code and presses Enter into the focused field.
- *  - USB serial (CDC) mode: Chrome/Edge read the scanner directly through Web Serial (see useSerialScanner). Use this
- *    on a Mac, where macOS drops the keystrokes of this scanner in keyboard mode. Press "Connect scanner" once and
- *    pick the scanner; the browser remembers it and reconnects automatically on later visits.
+ *  - USB keyboard mode: the scanner types the code and presses Enter into the focused field. This is the only path on
+ *    an iPad or iPhone (no Web Serial or WebUSB there), and it works on Android too.
+ *  - USB serial (CDC) mode: Chrome/Edge read the scanner directly through Web Serial, or WebUSB on Android (see
+ *    useSerialScanner). Use this on a Mac, where macOS drops the keystrokes of this scanner in keyboard mode. Press
+ *    "Connect scanner" once and pick the scanner; the browser remembers it and reconnects automatically later.
  *
- * On a computer it keeps focus so the next scan lands here without touching the screen: if focus drops
- * to nothing (the page body), it comes back. It never steals focus from another field the person has
- * deliberately clicked into. On a touch screen it leaves focus alone.
+ * It keeps focus so the next scan lands here without touching the screen: if focus drops to nothing (the page body),
+ * it comes back. It never steals focus from another field the person has deliberately clicked into.
+ *
+ * On a touch screen the field is focused too, but with the on-screen keyboard held back (inputMode "none"), so a
+ * scanner typing like a hardware keyboard still lands here without a software keyboard covering the page. "Type a code"
+ * turns the on-screen keyboard on for typing by hand.
  */
 export function ScanInput({ onScan, disabled = false, label = "Scan a barcode", status = "idle" }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
-  const { canUseSerial, serialConnected, serialBusy, connect } = useSerialScanner(onScan, disabled);
+  // Touch screens only: true while the person is typing a code by hand with the on-screen keyboard.
+  const [typing, setTyping] = useState(false);
+  const { canUseSerial, serialConnected, serialBusy, serialError, connect } = useSerialScanner(onScan, disabled);
   const touch = useSyncExternalStore(subscribeTouch, isTouchScreen, () => false);
+  // The field is kept focused unless the person is typing on a touch screen (then it is theirs to focus).
+  const keepFocus = !(touch && typing);
 
   useEffect(() => {
-    if (!disabled && !isTouchScreen()) inputRef.current?.focus();
-  }, [disabled]);
+    if (!disabled && keepFocus) inputRef.current?.focus();
+  }, [disabled, keepFocus]);
 
   // On a touch screen, fetch the camera decoder in the background so the camera also works offline later.
   useEffect(() => {
@@ -54,10 +62,19 @@ export function ScanInput({ onScan, disabled = false, label = "Scan a barcode", 
   }, []);
 
   function refocusIfIdle() {
-    if (isTouchScreen()) return;
+    if (!keepFocus) return;
     window.setTimeout(() => {
       const active = document.activeElement;
       if (!disabled && (!active || active === document.body)) inputRef.current?.focus();
+    }, 0);
+  }
+
+  function toggleTyping() {
+    setTyping((on) => !on);
+    // inputMode only takes effect on a fresh focus, so drop focus and take it again once React has applied the change.
+    window.setTimeout(() => {
+      inputRef.current?.blur();
+      inputRef.current?.focus();
     }, 0);
   }
 
@@ -77,13 +94,14 @@ export function ScanInput({ onScan, disabled = false, label = "Scan a barcode", 
         {label}
         <input
           ref={inputRef}
-          data-autofocus={touch ? undefined : ""}
+          // The dialog focuses this field when it opens, instead of its Close button. Left off only while typing by hand.
+          data-autofocus={keepFocus ? "" : undefined}
           type="text"
           autoComplete="off"
           autoCapitalize="characters"
           autoCorrect="off"
           spellCheck={false}
-          inputMode={cameraOpen ? "none" : undefined}
+          inputMode={cameraOpen || (touch && !typing) ? "none" : undefined}
           disabled={disabled}
           onBlur={refocusIfIdle}
           onKeyDown={(event) => {
@@ -93,11 +111,15 @@ export function ScanInput({ onScan, disabled = false, label = "Scan a barcode", 
             }
           }}
           className={`rounded-xl border-2 bg-page px-4 py-3.5 font-mono text-lg text-ink ${BORDER[status]}`}
-          placeholder={touch ? "Use the camera, or type a code" : "Point the scanner at a label"}
+          placeholder={touch ? "Scan a label, use the camera, or type" : "Point the scanner at a label"}
         />
         {disabled ? null : (
           <span className="text-xs font-normal text-muted">
-            {touch ? "Tap the field to type a code." : "Scanner ready. Focus stays here."}
+            {touch
+              ? typing
+                ? "Type a code, then press Enter."
+                : "Scanner ready. Tap Type a code to use the keyboard."
+              : "Scanner ready. Focus stays here."}
           </span>
         )}
       </label>
@@ -114,6 +136,11 @@ export function ScanInput({ onScan, disabled = false, label = "Scan a barcode", 
           <button type="button" onClick={() => setCameraOpen(true)} className={`${ghostButtonClass} py-1`}>
             Use camera
           </button>
+          {touch ? (
+            <button type="button" onClick={toggleTyping} className={`${ghostButtonClass} py-1`}>
+              {typing ? "Back to scanner" : "Type a code"}
+            </button>
+          ) : null}
           {canUseSerial && !serialConnected ? (
             <button type="button" onClick={connect} className={`${ghostButtonClass} py-1`}>
               Connect scanner
@@ -122,9 +149,11 @@ export function ScanInput({ onScan, disabled = false, label = "Scan a barcode", 
           {serialConnected ? (
             <span className="text-xs font-normal text-muted">USB scanner connected.</span>
           ) : null}
-          {serialBusy && !serialConnected ? (
+          {serialError && !serialConnected ? (
+            <span className="text-xs font-normal text-bad">Could not open the scanner. {serialError}</span>
+          ) : serialBusy && !serialConnected ? (
             <span className="text-xs font-normal text-muted">
-              The scanner is in use by the extension panel. Close the panel, then press Connect scanner.
+              The scanner is in use by another page or the extension panel. Close it, then press Connect scanner.
             </span>
           ) : null}
         </div>
