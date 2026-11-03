@@ -5,6 +5,7 @@ import { canWorkAtAnyLocation } from "@/server/auth/permissions";
 import { getIssuedBottle } from "@/server/services/issue.service";
 import { env } from "@/server/env";
 import { Tag, type Tone } from "@/components/ui/Tag";
+import { SmartPrint } from "@/components/labels/SmartPrint";
 import { cardClass, tableClass, tabClass, tabListClass, tdClass, thClass } from "@/components/ui/styles";
 
 export const metadata = { title: "Issued bottle" };
@@ -70,9 +71,13 @@ export default async function IssuedBottlePage({
         <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1">
           <h1 className="font-mono text-[22px] font-bold tracking-tight">{unit.serial}</h1>
           {first && active.length > 0 ? (
-            <a href={`/api/issues/${unit.serial}/label`} target="_blank" rel="noreferrer" className="text-sm underline">
+            <SmartPrint
+              pdfHref={`/api/issues/${encodeURIComponent(unit.serial)}/label`}
+              tsplHref={`/api/issues/${encodeURIComponent(unit.serial)}/label?format=tspl`}
+              className="text-sm underline"
+            >
               Print label
-            </a>
+            </SmartPrint>
           ) : null}
         </div>
         <p className="mt-1 text-sm text-zinc-500">

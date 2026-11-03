@@ -68,7 +68,7 @@ export default async function DeliveryPage({ params }: { params: Promise<{ code:
             </svg>
             Stock recorded
           </span>
-          <LabelButtons delivery={delivery.code} only="delivery" label="Open delivery label PDF" single />
+          <LabelButtons delivery={delivery.code} only="delivery" label="Print delivery label" single />
         </div>
         <p className={pageSubtitleClass}>
           {count} {count === 1 ? "item" : "items"} received together. Each item keeps its own lot, expiry and barcode

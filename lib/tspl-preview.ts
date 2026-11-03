@@ -67,6 +67,11 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
     font-weight: 600; cursor: pointer; }
   .print:hover:not(:disabled) { background: #379158; }
   .print:disabled { opacity: .65; cursor: default; }
+  #msg { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 5; max-width: 90vw; padding: 10px 16px; border-radius: 8px; background: #3c4043; color: #fff; font-size: 14px; box-shadow: 0 2px 10px rgba(0,0,0,.5); }
+  #msg[hidden] { display: none; }
+  #msg.err { background: #b3261e; }
+  #pickbar .first { display: inline-flex; align-items: center; gap: 6px; }
+  #pickbar .first input { width: 70px; }
   main { display: flex; flex-direction: column; align-items: safe center; gap: 20px; padding: 28px 24px 48px; }
   .seg { display: flex; padding: 2px; background: #3c4043; border-radius: 6px; }
   .seg button { height: 30px; padding: 0 12px; border: 0; border-radius: 4px; background: transparent; color: #bdc1c6; font: inherit; font-size: 13px; cursor: pointer; }
@@ -103,16 +108,18 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
       <button id="zoom-value" type="button" title="Reset to 50%">50%</button>
       <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
     </div>
-    <button id="print" class="print" type="button">Open PDF</button>
+    <button id="print" class="print" type="button">Print</button>
   </div>
 </header>
 <div id="pickbar" hidden>
   <button id="sel-all" type="button">Select all</button>
   <button id="sel-none" type="button">Clear</button>
+  <span class="first"><label for="sel-first">First</label><input id="sel-first" type="number" min="1" max="${svgs.length}" inputmode="numeric" placeholder="10" aria-label="Print only the first labels"><button id="sel-first-go" type="button">Select</button></span>
   <input id="sel-range" type="text" placeholder="e.g. 1-5, 8" aria-label="Label numbers to print" autocomplete="off">
   <span>Click labels to choose them. Shift-click selects a range.</span>
   <span id="pickcount"></span>
 </div>
+<div id="msg" role="status" hidden></div>
 <main>${figures.join("")}</main>
 <script>
 (function () {
@@ -153,6 +160,56 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
   // (nothing is installed on the PC besides the printer's driver).
   var btn = document.getElementById("print");
 
+  // A phone or tablet whose browser can talk to a USB printer prints straight to it (TSPL over WebUSB), since it has no
+  // printer driver. Everything else opens the PDF. So only one of the two ever happens.
+  var usbMode = (function () {
+    var ua = navigator.userAgent || "";
+    var mobile = (navigator.userAgentData && navigator.userAgentData.mobile) || /Android|iPhone|iPad|iPod/i.test(ua) ||
+      (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+    return !!(mobile && navigator.usb);
+  })();
+  var verb = usbMode ? "Print" : "Open PDF";
+  var msg = document.getElementById("msg");
+  var msgTimer = null;
+  function say(text, bad) {
+    msg.textContent = text;
+    msg.className = bad ? "err" : "";
+    msg.hidden = false;
+    clearTimeout(msgTimer);
+    msgTimer = setTimeout(function () { msg.hidden = true; }, 5000);
+  }
+  async function usbPrint(url) {
+    var known = await navigator.usb.getDevices();
+    var dev = known.length === 1 ? known[0] : await navigator.usb.requestDevice({ filters: [] });
+    var res = await fetch(url, { credentials: "same-origin", cache: "no-store" });
+    if (!res.ok) {
+      var body = null;
+      try { body = await res.json(); } catch (e) {}
+      throw new Error((body && body.error) || "Could not get the labels (" + res.status + ").");
+    }
+    var bytes = new TextEncoder().encode(await res.text());
+    if (!dev.opened) await dev.open();
+    if (!dev.configuration) await dev.selectConfiguration(1);
+    var iface = null, ep = null;
+    dev.configuration.interfaces.forEach(function (i) {
+      i.alternates.forEach(function (a) {
+        a.endpoints.forEach(function (e) {
+          if (iface === null && e.direction === "out" && e.type === "bulk") { iface = i.interfaceNumber; ep = e.endpointNumber; }
+        });
+      });
+    });
+    if (iface === null) throw new Error("This USB device has no printer endpoint. Pick the label printer.");
+    await dev.claimInterface(iface);
+    try {
+      for (var o = 0; o < bytes.length; o += 4096) {
+        var r = await dev.transferOut(ep, bytes.slice(o, o + 4096));
+        if (r.status !== "ok") throw new Error("The printer did not accept the data (" + r.status + ").");
+      }
+    } finally {
+      try { await dev.releaseInterface(iface); } catch (e) {}
+    }
+  }
+
   // Choosing which labels: "All labels", or "Custom" where you tick the labels you want. Labels are numbered as shown.
   var figs = Array.prototype.slice.call(document.querySelectorAll(".lbl"));
   var total = figs.length;
@@ -189,10 +246,10 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
     pickCount.textContent = nums.length + " of " + total + " selected";
     if (document.activeElement !== rangeIn) rangeIn.value = compress(nums);
     if (custom) {
-      btn.textContent = nums.length ? "Open PDF of " + nums.length + " selected" : "Select labels";
+      btn.textContent = nums.length ? verb + " " + nums.length + " selected" : "Select labels";
       btn.disabled = nums.length === 0;
     } else {
-      btn.textContent = "Open PDF";
+      btn.textContent = verb + (total > 1 ? " all " + total : "");
       btn.disabled = false;
     }
   }
@@ -203,6 +260,18 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
     refresh();
   };
   document.getElementById("sel-none").onclick = function () { selected = {}; lastN = null; refresh(); };
+  // "First 10" of a pack of 100: the quickest way to print only some.
+  var firstIn = document.getElementById("sel-first");
+  function selectFirst() {
+    var n = Math.min(Math.floor(Number(firstIn.value)), total);
+    if (!(n >= 1)) return;
+    selected = {};
+    for (var k = 1; k <= n; k++) selected[k] = true;
+    lastN = null;
+    refresh();
+  }
+  document.getElementById("sel-first-go").onclick = selectFirst;
+  firstIn.addEventListener("keydown", function (e) { if (e.key === "Enter") selectFirst(); });
   figs.forEach(function (f) {
     f.addEventListener("click", function (e) {
       if (!custom) return;
@@ -235,10 +304,21 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
     var nums = picked();
     if (custom && nums.length === 0) return;
     var url = new URL(location.href);
-    url.searchParams.set("format", "pdf");
+    url.searchParams.set("format", usbMode ? "tspl" : "pdf");
     if (custom) url.searchParams.set("pick", compress(nums));
     else url.searchParams.delete("pick");
-    window.open(url.toString(), "_blank");
+    if (!usbMode) { window.open(url.toString(), "_blank"); return; }
+    var was = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Printing...";
+    usbPrint(url.toString()).then(function () {
+      say("Sent " + (custom ? nums.length : total) + " label" + ((custom ? nums.length : total) === 1 ? "" : "s") + " to the printer.");
+    }).catch(function (err) {
+      var name = err && err.name;
+      say(name === "NotFoundError" ? "No printer was chosen." :
+        (name === "SecurityError" || name === "NetworkError") ? "Chrome could not open the printer. Unplug and replug it, then try again." :
+        (err && err.message) || "Printing failed.", true);
+    }).then(function () { btn.textContent = was; refresh(); });
   };
 })();
 </script>

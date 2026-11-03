@@ -1,7 +1,7 @@
 import Link from "next/link";
+import { SmartPrint } from "@/components/labels/SmartPrint";
 import { linkButtonClass, monoChipClass } from "@/components/ui/styles";
 import { Tag } from "@/components/ui/Tag";
-import { UsbPrintButton } from "./UsbPrintButton";
 
 // Small pieces shared by the pages that walk down a delivery: batch -> carton -> pack -> bottle.
 
@@ -48,17 +48,13 @@ export function stateText(state: string): string {
 export function RowActions({ labelCode, open }: { labelCode: string; open?: string }) {
   return (
     <div className="flex items-center justify-end gap-3">
-      <a
-        href={`/api/labels?serial=${encodeURIComponent(labelCode)}&format=pdf`}
-        target="_blank"
-        rel="noreferrer"
+      <SmartPrint
+        pdfHref={`/api/labels?serial=${encodeURIComponent(labelCode)}&format=pdf`}
+        tsplHref={`/api/labels?serial=${encodeURIComponent(labelCode)}&format=tspl`}
         className="whitespace-nowrap text-sm font-semibold text-side-title underline"
       >
         Print label
-      </a>
-      <UsbPrintButton query={`serial=${encodeURIComponent(labelCode)}`} className="whitespace-nowrap text-sm font-semibold text-side-title underline">
-        Print (USB)
-      </UsbPrintButton>
+      </SmartPrint>
       {open ? (
         <Link href={open} className={linkButtonClass}>
           Open

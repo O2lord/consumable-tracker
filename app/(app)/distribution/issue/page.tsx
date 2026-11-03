@@ -6,6 +6,7 @@ import { listIssuesPage } from "@/server/services/issue.service";
 import { listStandardItemsByTest, listTests } from "@/server/services/policy.service";
 import { tableClass, tdClass, thClass } from "@/components/ui/styles";
 import { Pagination } from "@/components/ui/Pagination";
+import { SmartPrint } from "@/components/labels/SmartPrint";
 import { parsePage } from "@/lib/pagination";
 import { perTestUnit } from "@/lib/pack-size";
 import { IssueForms } from "./IssueForms";
@@ -126,9 +127,13 @@ export default async function IssuePage({ searchParams }: { searchParams: Promis
                         Open
                       </Link>
                       {!r.cleared ? (
-                        <a href={`/api/issues/${r.serial}/label`} target="_blank" rel="noreferrer" className="relative z-10 underline">
+                        <SmartPrint
+                          pdfHref={`/api/issues/${encodeURIComponent(r.serial)}/label`}
+                          tsplHref={`/api/issues/${encodeURIComponent(r.serial)}/label?format=tspl`}
+                          className="relative z-10 underline"
+                        >
                           Label
-                        </a>
+                        </SmartPrint>
                       ) : null}
                     </span>
                   ) : null}

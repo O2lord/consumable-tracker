@@ -37,7 +37,7 @@ export default async function CartonPage({ params }: { params: Promise<{ code: s
           <h1 className={pageTitleClass}>
             Carton <span className="font-mono">{carton.code}</span>
           </h1>
-          <LabelButtons carton={carton.code} only="carton" label="Open carton label PDF" single />
+          <LabelButtons carton={carton.code} only="carton" label="Print carton label" single />
         </div>
         <p className={pageSubtitleClass}>
           {carton.itemName}. Held {carton.packsCount.toLocaleString("en-GB")}{" "}

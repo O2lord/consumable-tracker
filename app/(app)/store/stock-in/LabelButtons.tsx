@@ -1,5 +1,5 @@
+import { SmartPrint } from "@/components/labels/SmartPrint";
 import { linkButtonClass, primaryLinkButtonClass } from "@/components/ui/styles";
-import { UsbPrintButton } from "./UsbPrintButton";
 
 type Props = (
   | { batch: string; only: "batch" | "items" | "cartons" | "packs" | "bottles" }
@@ -9,18 +9,19 @@ type Props = (
   // One pack: its own label, or only the bottles inside it. Leave `only` out for both.
   | { pack: string; only?: "pack" | "bottles" }
 ) & {
-  /** For a single label this is the link text. Several labels get the full PDF button. */
+  /** The button text. */
   label: string;
-  /** One label, shown as a plain text link next to a title. Several labels get the full set of buttons. */
+  /** One label, shown as a plain text link next to a title. Several labels open the preview, where you choose which. */
   single?: boolean;
-  /** Stack the actions in a narrow column (a single Open batch label button), for a side panel. */
+  /** Stack the actions in a narrow column, for a side panel. */
   stacked?: boolean;
 };
 
 /**
- * Buttons for one part of a delivery or batch: open the label PDF (staff check it, then print it with the system
- * print window, see docs/label-printing-setup.md). Nothing is installed on the PC
- * besides the printer's driver. Each part is its own action.
+ * Print buttons for one part of a delivery or batch. One label prints straight away: the PDF on a PC, or straight to
+ * the USB printer on a phone or tablet (SmartPrint decides, so there is never a second button). Several labels open
+ * the preview page, where you can print all of them or only some (the first 10 of 100, or labels 3-7), and which
+ * does the same PC / phone switch. See docs/label-printing-setup.md.
  */
 export function LabelButtons(props: Props) {
   const { label, single = false, stacked = false, only } = props;
@@ -37,48 +38,34 @@ export function LabelButtons(props: Props) {
   if (single) {
     // A single plain text link, not a button: it sits next to the page title.
     return (
-      <span className="inline-flex items-start gap-3">
-        <a
-          href={`/api/labels?${q}&format=pdf`}
-          target="_blank"
-          rel="noreferrer"
-          className="text-sm font-semibold text-side-title underline"
-        >
-          {label}
-        </a>
-        <UsbPrintButton query={q} className="text-sm font-semibold text-side-title underline">
-          Print (USB)
-        </UsbPrintButton>
-      </span>
+      <SmartPrint
+        pdfHref={`/api/labels?${q}&format=pdf`}
+        tsplHref={`/api/labels?${q}&format=tspl`}
+        className="text-sm font-semibold text-side-title underline"
+      >
+        {label}
+      </SmartPrint>
     );
   }
+
+  // Several labels: the preview page, where you choose all of them or only some, then print.
+  const previewHref = `/api/labels?${q}&format=preview`;
 
   if (stacked) {
     return (
       <div className="flex flex-col gap-2">
-        <a
-          href={`/api/labels?${q}&format=pdf`}
-          target="_blank"
-          rel="noreferrer"
-          className={`${linkButtonClass} justify-center`}
-        >
-          Open batch label
+        <a href={previewHref} target="_blank" rel="noreferrer" className={`${linkButtonClass} justify-center`}>
+          {label}
         </a>
-        <UsbPrintButton query={q} className={`${linkButtonClass} justify-center`}>
-          Print label (USB)
-        </UsbPrintButton>
       </div>
     );
   }
 
   return (
     <div className="flex flex-wrap items-center gap-3">
-      <a href={`/api/labels?${q}&format=pdf`} target="_blank" rel="noreferrer" className={primaryLinkButtonClass}>
-        Open PDF (one label per page)
+      <a href={previewHref} target="_blank" rel="noreferrer" className={primaryLinkButtonClass}>
+        {label}
       </a>
-      <UsbPrintButton query={q} className={linkButtonClass}>
-        Print labels (USB)
-      </UsbPrintButton>
     </div>
   );
 }

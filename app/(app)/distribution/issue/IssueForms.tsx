@@ -5,6 +5,8 @@ import { flushSync } from "react-dom";
 import { ActionForm, SubmitSlot } from "@/components/forms/ActionForm";
 import type { FormState } from "@/components/forms/form-state";
 import { ScanField } from "@/components/scanner/ScanField";
+import { SmartPrint } from "@/components/labels/SmartPrint";
+import { printTsplUrls, useUsbMode, usbErrorMessage } from "@/components/labels/usb-print";
 import { Field } from "@/components/ui/Field";
 import { Select } from "@/components/ui/Dropdown";
 import { Modal } from "@/components/ui/Modal";
@@ -567,6 +569,18 @@ export function IssueForms({ header, workLocationId, workServiceRole, canOverrid
   const [labelPreview, setLabelPreview] = useState<string[] | null>(null);
   const [labelIndex, setLabelIndex] = useState(0);
   const labelFrame = useRef<HTMLIFrameElement>(null);
+  // On a phone or tablet that can print over USB the Print button sends the label straight to the printer.
+  const usbMode = useUsbMode();
+  const [usbState, setUsbState] = useState<{ busy: boolean; message: string; bad: boolean }>({ busy: false, message: "", bad: false });
+  async function printIssueLabelUsb(serial: string) {
+    setUsbState({ busy: true, message: "", bad: false });
+    try {
+      await printTsplUrls([`/api/issues/${encodeURIComponent(serial)}/label?format=tspl`]);
+      setUsbState({ busy: false, message: "Sent to the printer.", bad: false });
+    } catch (err) {
+      setUsbState({ busy: false, message: usbErrorMessage(err), bad: true });
+    }
+  }
   // The error from the last attempt, shown as a toast over the pop-up (which stays open with everything typed).
   const [errorToast, setErrorToast] = useState<{ id: number; message: string } | null>(null);
   // A bottle was issued and the request has more: the same toast style in green, over the pop-up that stayed open.
@@ -699,14 +713,13 @@ export function IssueForms({ header, workLocationId, workServiceRole, canOverrid
           {labelSerials.map((serial, index) => (
             <span key={serial}>
               {" "}
-              <a
-                href={`/api/issues/${encodeURIComponent(serial)}/label`}
-                target="_blank"
-                rel="noreferrer"
+              <SmartPrint
+                pdfHref={`/api/issues/${encodeURIComponent(serial)}/label`}
+                tsplHref={`/api/issues/${encodeURIComponent(serial)}/label?format=tspl`}
                 className="underline"
               >
-                {labelSerials.length > 1 ? `Open label ${index + 1}` : "Open label"}
-              </a>
+                {labelSerials.length > 1 ? `Print label ${index + 1}` : "Print label"}
+              </SmartPrint>
             </span>
           ))}
         </p>
@@ -830,21 +843,39 @@ export function IssueForms({ header, workLocationId, workServiceRole, canOverrid
             className="h-[60dvh] w-full rounded-lg border border-line"
           />
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <button type="button" onClick={() => labelFrame.current?.contentWindow?.print()} className={buttonClass}>
-              {labelPreview.length > 1 ? `Print label ${labelIndex + 1}` : "Print"}
-            </button>
-            <a
-              href={`/api/issues/${encodeURIComponent(labelPreview[labelIndex] ?? "")}/label`}
-              target="_blank"
-              rel="noreferrer"
-              className={`${ghostButtonClass} inline-block py-2 text-center`}
-            >
-              Open in new tab
-            </a>
+            {usbMode ? (
+              <button
+                type="button"
+                disabled={usbState.busy}
+                onClick={() => printIssueLabelUsb(labelPreview[labelIndex] ?? "")}
+                className={buttonClass}
+              >
+                {usbState.busy ? "Printing..." : labelPreview.length > 1 ? `Print label ${labelIndex + 1}` : "Print"}
+              </button>
+            ) : (
+              <>
+                <button type="button" onClick={() => labelFrame.current?.contentWindow?.print()} className={buttonClass}>
+                  {labelPreview.length > 1 ? `Print label ${labelIndex + 1}` : "Print"}
+                </button>
+                <a
+                  href={`/api/issues/${encodeURIComponent(labelPreview[labelIndex] ?? "")}/label`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={`${ghostButtonClass} inline-block py-2 text-center`}
+                >
+                  Open in new tab
+                </a>
+              </>
+            )}
             <button type="button" onClick={() => setLabelPreview(null)} className={`${ghostButtonClass} py-2`}>
               Done
             </button>
           </div>
+          {usbState.message ? (
+            <p role="status" className={`mt-2 text-xs ${usbState.bad ? "text-red-600" : "text-muted"}`}>
+              {usbState.message}
+            </p>
+          ) : null}
         </Modal>
       ) : null}
     </div>

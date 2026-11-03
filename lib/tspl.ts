@@ -89,12 +89,15 @@ export function layoutLabel(label: Label): LabelLayout {
   const left = LEFT_X_DOTS;
 
   return {
+    // Everything sits a little higher than before and the details line ends well inside the label (about 6 mm
+    // above the bottom edge of the 22 mm label), because the printer feeds a little low and the last line was
+    // being cut off at the label edge.
     texts: [
-      { x: left, y: 10, font: "2", text: name },
-      { x: left, y: 108, font: "3", text: code },
-      ...(details ? [{ x: left, y: 144, font: "1" as const, text: details }] : []),
+      { x: left, y: 4, font: "2", text: name },
+      { x: left, y: 90, font: "3", text: code },
+      ...(details ? [{ x: left, y: 120, font: "1" as const, text: details }] : []),
     ],
-    barcode: { x: left, y: 40, height: 60, narrow, width, code },
+    barcode: { x: left, y: 30, height: 54, narrow, width, code },
   };
 }
 
@@ -113,6 +116,60 @@ export function labelToTspl(label: Label): string {
     `BARCODE ${barcode.x},${barcode.y},"128",${barcode.height},0,0,${barcode.narrow},${barcode.narrow},"${barcode.code}"`,
     ...rest.map(text),
     "PRINT 1,1",
+  ].join("\r\n");
+}
+
+export interface IssueLabelTspl {
+  serial: string;
+  patientHospitalNo: string | null;
+  references: { type: string; ref: string; testCode: string | null }[];
+  issuedAt: Date;
+  collectorType: string | null;
+  collectorName: string | null;
+  locationName: string;
+}
+
+const ISSUE_MAX_REFERENCES = 3;
+
+/** The issue label (stuck on a bottle when it is handed out) for the same printer, laid out like the PDF one. */
+export function issueLabelToTspl(label: IssueLabelTspl): string {
+  const left = LEFT_X_DOTS;
+  const text = (x: number, y: number, font: TsplFont, value: string) => `TEXT ${x},${y},"${font}",0,1,1,"${tsplText(value)}"`;
+  const lines: string[] = [];
+  let y = 4;
+
+  lines.push(text(left, y, "3", truncate(label.patientHospitalNo ?? label.locationName, 24)));
+  y += 28;
+  const shown = label.references.slice(0, ISSUE_MAX_REFERENCES);
+  for (const r of shown) {
+    lines.push(text(left, y, "1", truncate(r.testCode ? `${r.ref}  ${r.testCode}` : r.ref, 46)));
+    y += 14;
+  }
+  const extra = label.references.length - shown.length;
+  if (extra > 0) {
+    lines.push(text(left, y, "1", `+ ${extra} more`));
+    y += 14;
+  }
+  const collector = [label.collectorType, label.collectorName].filter(Boolean).join(": ");
+  lines.push(text(left, y, "1", truncate(`${label.issuedAt.toLocaleDateString("en-GB")}${collector ? `  ${collector}` : ""}`, 46)));
+  y += 16;
+
+  const code = tsplText(label.serial);
+  const modules = barcodeModules(code.length);
+  const narrow = modules * 2 <= INNER_DOTS ? 2 : 1;
+  const barcodeH = Math.max(24, Math.min(44, LABEL_H_DOTS - 28 - y));
+
+  return [
+    `SIZE ${TSPL_LABEL_W_MM} mm,${TSPL_LABEL_H_MM} mm`,
+    `GAP ${TSPL_GAP_MM} mm,0 mm`,
+    `DIRECTION ${TSPL_DIRECTION}`,
+    "REFERENCE 0,0",
+    "CLS",
+    ...lines,
+    `BARCODE ${left},${y},"128",${barcodeH},0,0,${narrow},${narrow},"${code}"`,
+    text(left, y + barcodeH + 3, "2", label.serial),
+    "PRINT 1,1",
+    "",
   ].join("\r\n");
 }
 
