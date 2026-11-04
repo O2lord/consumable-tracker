@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { PRINTER_KEY, isSavedUsb } from "@/lib/usb-saved";
 
 // Minimal Web Serial typings (Chrome/Edge only), so no extra @types package is needed.
 interface SerialPortLike {
@@ -28,6 +29,7 @@ interface UsbInterfaceLike {
 interface UsbDeviceLike {
   vendorId: number;
   productId: number;
+  productName?: string;
   opened: boolean;
   configuration: { interfaces: UsbInterfaceLike[] } | null;
   open(): Promise<void>;
@@ -93,9 +95,11 @@ const saveScanner = (d: UsbDeviceLike) => {
     /* storage can be blocked */
   }
 };
+// A hub brings other USB devices along (network adapters, the label printer). None of them is the scanner.
+const NOT_A_SCANNER = /\b(lan|ethernet|network|hub|printer)\b|10\/100/i;
 const isScannerDevice = (d: UsbDeviceLike) => {
   const saved = readSavedScanner();
-  return !!saved && d.vendorId === saved.v && d.productId === saved.p;
+  return !!saved && d.vendorId === saved.v && d.productId === saved.p && !NOT_A_SCANNER.test(d.productName ?? "");
 };
 
 // Turns the browser's raw error into something a person can act on, keeping the original text in brackets.
@@ -387,6 +391,17 @@ export function useSerialScanner(onScan: (value: string) => void | Promise<void>
 
     // Reconnect to a scanner the person already allowed for this site, now and whenever it is plugged in.
     const reconnect = () => {
+      // A network adapter saved as the scanner by an earlier pick is forgotten.
+      if (usb) {
+        usb
+          .getDevices()
+          .then((devices) => {
+            const saved = readSavedScanner();
+            const bad = devices.find((d) => saved && d.vendorId === saved.v && d.productId === saved.p && NOT_A_SCANNER.test(d.productName ?? ""));
+            if (bad) window.localStorage.removeItem(SAVED_KEY);
+          })
+          .catch(() => {});
+      }
       if (serial) {
         serial
           .getPorts()
@@ -406,6 +421,8 @@ export function useSerialScanner(onScan: (value: string) => void | Promise<void>
     };
     reconnect();
     (serial ?? usb)?.addEventListener("connect", reconnect);
+    // The Devices menu in the top bar picked a scanner: open it here.
+    window.addEventListener(DEVICES_EVENT, reconnect);
 
     connectRef.current = async () => {
       setSerialBusy(false);
@@ -420,6 +437,15 @@ export function useSerialScanner(onScan: (value: string) => void | Promise<void>
         } else if (usb) {
           const paired = (await usb.getDevices()).find(isScannerDevice);
           const device = paired ?? (await usb.requestDevice({ filters: [] }));
+          if (NOT_A_SCANNER.test(device.productName ?? "")) {
+            setSerialError(`That is "${device.productName}", not the scanner. Pick DECODER-CDC.`);
+            return;
+          }
+          // The label printer is also a USB device on this tablet: never read it as the scanner.
+          if (isSavedUsb(PRINTER_KEY, device)) {
+            setSerialError("That is the label printer, not the scanner. Pick the scanner.");
+            return;
+          }
           saveScanner(device);
           void run(openUsb(device));
         }
@@ -435,6 +461,7 @@ export function useSerialScanner(onScan: (value: string) => void | Promise<void>
       disposed = true;
       connectRef.current = null;
       (serial ?? usb)?.removeEventListener("connect", reconnect);
+      window.removeEventListener(DEVICES_EVENT, reconnect);
       window.clearTimeout(flushTimer);
       void active?.cancel();
     };
@@ -448,4 +475,90 @@ export function useSerialScanner(onScan: (value: string) => void | Promise<void>
     /** Opens the browser's scanner picker (or reopens the one already allowed). */
     connect: () => void connectRef.current?.(),
   };
+}
+
+/** Sent on window when a scanner has been picked in the top bar, so every page with a scan box opens it. */
+export const DEVICES_EVENT = "devices-changed";
+
+/**
+ * Picks the scanner (the browser's device picker) and remembers it, for the Devices menu in the top bar. The pages
+ * that scan open it by themselves. Call it straight from a tap.
+ */
+export async function chooseScanner(): Promise<void> {
+  const serial = usbFirst() ? undefined : getSerial();
+  const usb = serial ? undefined : getUsb();
+  if (serial) {
+    const paired = await serial.getPorts();
+    if (!paired[0]) await serial.requestPort();
+  } else if (usb) {
+    const device = await usb.requestDevice({ filters: [] });
+    if (NOT_A_SCANNER.test(device.productName ?? "")) {
+      throw new Error(`That is "${device.productName}", not the scanner. Pick the scanner (DECODER-CDC).`);
+    }
+    if (isSavedUsb(PRINTER_KEY, device)) throw new Error("That is the label printer, not the scanner. Pick the scanner.");
+    saveScanner(device);
+  } else {
+    throw new Error("This browser cannot read a USB scanner. Use Chrome or Edge.");
+  }
+  window.dispatchEvent(new Event(DEVICES_EVENT));
+}
+
+/** Whether a scanner has been set up on this device, its name, and `choose` to pick or change it. */
+export function useScannerSetup() {
+  const supported = useSyncExternalStore(subscribeNever, serialSupported, () => false);
+  const [ready, setReady] = useState(false);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!supported) return;
+    const serial = usbFirst() ? undefined : getSerial();
+    const usb = serial ? undefined : getUsb();
+    const source = serial ?? usb;
+    const refresh = () => {
+      if (serial) {
+        serial
+          .getPorts()
+          .then((ports) => {
+            setReady(ports.length > 0);
+            setName("");
+          })
+          .catch(() => {});
+      } else if (usb) {
+        usb
+          .getDevices()
+          .then((devices) => {
+            const scanner = devices.find(isScannerDevice);
+            setReady(!!scanner);
+            setName(scanner?.productName ?? "");
+          })
+          .catch(() => {});
+      }
+    };
+    refresh();
+    source?.addEventListener("connect", refresh);
+    source?.addEventListener("disconnect", refresh);
+    window.addEventListener(DEVICES_EVENT, refresh);
+    return () => {
+      source?.removeEventListener("connect", refresh);
+      source?.removeEventListener("disconnect", refresh);
+      window.removeEventListener(DEVICES_EVENT, refresh);
+    };
+  }, [supported]);
+
+  const choose = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await chooseScanner();
+    } catch (err) {
+      // Closing the picker without choosing is not an error worth showing.
+      if (!(err instanceof Error) || err.name !== "NotFoundError") setError(explainError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return { supported, ready, name, busy, error, choose };
 }

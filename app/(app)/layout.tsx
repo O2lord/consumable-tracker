@@ -7,6 +7,7 @@ import { SyncStatus } from "@/components/offline/SyncStatus";
 import { OfflineNotice } from "@/components/offline/OfflineNotice";
 import { SidebarBrand, SidebarFrame, SidebarNav, SidebarToggle, type SidebarGroup, type SidebarLink } from "@/components/nav/SidebarNav";
 import { UserMenu } from "@/components/nav/UserMenu";
+import { DeviceConnect } from "@/components/nav/DeviceConnect";
 import { WorkLocationSwitcher } from "@/components/nav/WorkLocationSwitcher";
 import { PageLoading } from "@/components/ui/PageLoading";
 import { ToastProvider } from "@/components/ui/Toast";
@@ -123,6 +124,7 @@ async function TopBar() {
     <>
       <SyncStatus userId={session.userId} />
       <div className="flex-1" />
+      <DeviceConnect />
       <WorkLocationSwitcher
         locations={all.filter((l) => l.active).map((l) => ({ id: l.id, name: l.name }))}
         value={session.workLocationId}

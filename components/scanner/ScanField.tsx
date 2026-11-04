@@ -48,7 +48,7 @@ export function ScanField({ name, label, hint, autoFocus = false, actions }: Pro
   const inputRef = useRef<HTMLInputElement>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
   const touch = useSyncExternalStore(subscribeTouch, isTouchScreen, () => false);
-  const { canUseSerial, serialConnected, serialBusy, connect } = useSerialScanner((code) => {
+  const { canUseSerial, serialConnected, serialBusy } = useSerialScanner((code) => {
     if (inputRef.current) inputRef.current.value = code.trim();
     focusNextField(inputRef.current);
   });
@@ -107,14 +107,12 @@ export function ScanField({ name, label, hint, autoFocus = false, actions }: Pro
         ) : null}
         {actions}
         {canUseSerial && !serialConnected ? (
-          <button type="button" onClick={connect} className={`${ghostButtonClass} py-1`}>
-            Connect scanner
-          </button>
+          <span className="text-xs font-normal text-muted">USB scanner: connect it from Devices in the top bar.</span>
         ) : null}
         {serialConnected ? <span className="text-xs font-normal text-muted">USB scanner connected.</span> : null}
         {serialBusy && !serialConnected ? (
           <span className="text-xs font-normal text-muted">
-            The scanner is in use by the extension panel. Close the panel, then press Connect scanner.
+            The scanner is in use by the extension panel. Close the panel, then reload this page.
           </span>
         ) : null}
       </div>

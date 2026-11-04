@@ -67,6 +67,9 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
     font-weight: 600; cursor: pointer; }
   .print:hover:not(:disabled) { background: #379158; }
   .print:disabled { opacity: .65; cursor: default; }
+  .connect { background: #3c4043; font-weight: 500; font-size: 13px; }
+  .connect:hover:not(:disabled) { background: #4a4e51; }
+  .connect[hidden] { display: none; }
   #msg { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 5; max-width: 90vw; padding: 10px 16px; border-radius: 8px; background: #3c4043; color: #fff; font-size: 14px; box-shadow: 0 2px 10px rgba(0,0,0,.5); }
   #msg[hidden] { display: none; }
   #msg.err { background: #b3261e; }
@@ -108,6 +111,7 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
       <button id="zoom-value" type="button" title="Reset to 50%">50%</button>
       <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
     </div>
+    <button id="connect" class="print connect" type="button" hidden>Connect printer</button>
     <button id="print" class="print" type="button">Print</button>
   </div>
 </header>
@@ -178,9 +182,43 @@ export async function renderTsplPreviewHtml(labels: Label[], title: string): Pro
     clearTimeout(msgTimer);
     msgTimer = setTimeout(function () { msg.hidden = true; }, 5000);
   }
+  // The scanner and the printer are both USB devices on a tablet, so the printer is chosen on purpose and remembered
+  // by its own USB IDs (same keys as the rest of the app). The saved scanner is never used as the printer.
+  function isSaved(key, d) {
+    try {
+      var s = JSON.parse(localStorage.getItem(key) || "null");
+      return !!s && d.vendorId === s.v && d.productId === s.p;
+    } catch (e) { return false; }
+  }
+  function isPrinter(d) { return isSaved("printer-usb-id", d) && !/decoder|scanner|barcode/i.test(d.productName || ""); }
+  async function choosePrinter() {
+    var d = await navigator.usb.requestDevice({ filters: [] });
+    if (isSaved("scanner-usb-id", d) || /decoder|scanner|barcode/i.test(d.productName || "")) throw new Error("That is the barcode scanner. Pick the label printer.");
+    try { localStorage.setItem("printer-usb-id", JSON.stringify({ v: d.vendorId, p: d.productId })); } catch (e) {}
+    return d;
+  }
+  var connectBtn = document.getElementById("connect");
+  async function showConnected() {
+    try {
+      var p = (await navigator.usb.getDevices()).filter(isPrinter)[0];
+      connectBtn.textContent = p ? "Printer connected (change)" : "Connect printer";
+    } catch (e) {}
+  }
+  if (usbMode) {
+    connectBtn.hidden = false;
+    showConnected();
+    navigator.usb.addEventListener("connect", showConnected);
+    navigator.usb.addEventListener("disconnect", showConnected);
+    connectBtn.onclick = function () {
+      choosePrinter().then(showConnected).catch(function (err) {
+        if (err && err.name === "NotFoundError") return;
+        say((err && err.message) || "Could not connect the printer.", true);
+      });
+    };
+  }
   async function usbPrint(url) {
     var known = await navigator.usb.getDevices();
-    var dev = known.length === 1 ? known[0] : await navigator.usb.requestDevice({ filters: [] });
+    var dev = known.filter(isPrinter)[0] || await choosePrinter();
     var res = await fetch(url, { credentials: "same-origin", cache: "no-store" });
     if (!res.ok) {
       var body = null;

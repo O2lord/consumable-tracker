@@ -43,7 +43,7 @@ const BORDER: Record<ScanStatus, string> = {
 export function ScanInput({ onScan, disabled = false, label = "Scan a barcode", status = "idle" }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
-  const { canUseSerial, serialConnected, serialBusy, serialError, connect } = useSerialScanner(onScan, disabled);
+  const { canUseSerial, serialConnected, serialBusy, serialError } = useSerialScanner(onScan, disabled);
   const touch = useSyncExternalStore(subscribeTouch, isTouchScreen, () => false);
 
   useEffect(() => {
@@ -115,10 +115,8 @@ export function ScanInput({ onScan, disabled = false, label = "Scan a barcode", 
           <button type="button" onClick={() => setCameraOpen(true)} className={`${ghostButtonClass} py-1`}>
             Use camera
           </button>
-          {canUseSerial && !serialConnected ? (
-            <button type="button" onClick={connect} className={`${ghostButtonClass} py-1`}>
-              Connect scanner
-            </button>
+          {canUseSerial && !serialConnected && !serialError ? (
+            <span className="text-xs font-normal text-muted">USB scanner: connect it from Devices in the top bar.</span>
           ) : null}
           {serialConnected ? (
             <span className="text-xs font-normal text-muted">USB scanner connected.</span>
@@ -127,7 +125,7 @@ export function ScanInput({ onScan, disabled = false, label = "Scan a barcode", 
             <span className="text-xs font-normal text-bad">Could not open the scanner. {serialError}</span>
           ) : serialBusy && !serialConnected ? (
             <span className="text-xs font-normal text-muted">
-              The scanner is in use by another page or the extension panel. Close it, then press Connect scanner.
+              The scanner is in use by another page or the extension panel. Close it, then reload this page.
             </span>
           ) : null}
         </div>

@@ -19,6 +19,19 @@ export const TSPL_GAP_MM = 3;
 export const TSPL_DIRECTION: 0 | 1 = 0;
 
 /**
+ * Moves everything up or down on the label, in dots (8 dots = 1 mm). Negative moves it UP, positive moves it down.
+ * From a tablet or phone the job goes straight to the printer without the PC driver's own offset, so the print
+ * can start too low on the label. If the writing starts too low, make this more negative (-8 = 1 mm higher).
+ * If it starts too high or is cut off at the top, make it less negative. 0 sends no shift at all.
+ */
+export const TSPL_SHIFT_Y_DOTS: number = -64;
+
+/** The SHIFT line for a job, or nothing when the shift is 0. */
+function shiftCommand(): string[] {
+  return TSPL_SHIFT_Y_DOTS === 0 ? [] : [`SHIFT ${TSPL_SHIFT_Y_DOTS}`];
+}
+
+/**
  * Where the text and the barcode all start, measured from the left edge of the label, in dots (8 dots = 1 mm).
  * Raise it to move everything right, lower it to move everything left. Do not go below about 4, or the
  * writing runs off the left edge.
@@ -111,6 +124,7 @@ export function labelToTspl(label: Label): string {
     `GAP ${TSPL_GAP_MM} mm,0 mm`,
     `DIRECTION ${TSPL_DIRECTION}`,
     "REFERENCE 0,0",
+    ...shiftCommand(),
     "CLS",
     text(name),
     `BARCODE ${barcode.x},${barcode.y},"128",${barcode.height},0,0,${barcode.narrow},${barcode.narrow},"${barcode.code}"`,
@@ -164,6 +178,7 @@ export function issueLabelToTspl(label: IssueLabelTspl): string {
     `GAP ${TSPL_GAP_MM} mm,0 mm`,
     `DIRECTION ${TSPL_DIRECTION}`,
     "REFERENCE 0,0",
+    ...shiftCommand(),
     "CLS",
     ...lines,
     `BARCODE ${left},${y},"128",${barcodeH},0,0,${narrow},${narrow},"${code}"`,

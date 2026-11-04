@@ -4,7 +4,7 @@ import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { eq } from "drizzle-orm";
 import { env } from "../env";
-import { db } from "../db/client";
+import { db, resetSql } from "../db/client";
 import { locations, roles, users } from "../db/schema";
 import type { UserRole } from "../domain/types";
 import { staffIdToEmail, normalizeStaffId } from "../../lib/staff-id";
@@ -151,10 +151,44 @@ export async function signIn(staffIdInput: string, password: string): Promise<Si
   return { ok: true };
 }
 
+/** How long one profile query may take before the connection is treated as dead. */
+const PROFILE_QUERY_TIMEOUT_MS = 8000;
+
+/** Rejects if `work` has not finished in `ms`. The work itself is not cancelled; the pool reset below drops its socket. */
+function withTimeout<T>(work: PromiseLike<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Database query timed out after ${ms}ms`)), ms);
+    Promise.resolve(work).then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
+/**
+ * Runs the profile query with a time limit. If it stalls or fails (usually a socket the network dropped while
+ * idle), the pool is reset and the query is tried once more on a fresh connection.
+ */
+async function queryProfileResilient(userId: string) {
+  try {
+    return await withTimeout(queryProfile(userId), PROFILE_QUERY_TIMEOUT_MS);
+  } catch (err) {
+    logUnreachable("loadProfile: first attempt failed, retrying on a fresh connection", err);
+    await resetSql();
+    return await withTimeout(queryProfile(userId), PROFILE_QUERY_TIMEOUT_MS);
+  }
+}
+
 async function loadProfile(userId: string): Promise<Session | null> {
   let rows;
   try {
-    rows = await queryProfile(userId);
+    rows = await queryProfileResilient(userId);
   } catch (err) {
     logUnreachable("loadProfile: database query failed", err);
     throw new ServiceUnavailableError();
