@@ -23,7 +23,7 @@ interface UsbEndpointLike {
 }
 interface UsbInterfaceLike {
   interfaceNumber: number;
-  alternates: { interfaceClass: number; endpoints: UsbEndpointLike[] }[];
+  alternates: { alternateSetting?: number; interfaceClass: number; endpoints: UsbEndpointLike[] }[];
 }
 interface UsbDeviceLike {
   vendorId: number;
@@ -35,10 +35,13 @@ interface UsbDeviceLike {
   selectConfiguration(value: number): Promise<void>;
   claimInterface(n: number): Promise<void>;
   releaseInterface(n: number): Promise<void>;
+  selectAlternateInterface(interfaceNumber: number, alternateSetting: number): Promise<void>;
   controlTransferOut(
     setup: { requestType: "class"; recipient: "interface"; request: number; value: number; index: number },
+    data?: BufferSource,
   ): Promise<{ status: string }>;
   transferIn(endpoint: number, length: number): Promise<{ status: string; data?: DataView }>;
+  clearHalt(direction: "in" | "out", endpointNumber: number): Promise<void>;
 }
 interface UsbLike extends EventTarget {
   getDevices(): Promise<UsbDeviceLike[]>;
@@ -50,6 +53,15 @@ const getSerial = (): SerialLike | undefined =>
 const getUsb = (): UsbLike | undefined =>
   typeof navigator === "undefined" ? undefined : (navigator as unknown as { usb?: UsbLike }).usb;
 const subscribeNever = () => () => {};
+
+// Chrome on Android has navigator.serial, but it lists only Bluetooth ports and never a USB device, so a USB scanner
+// there is only reachable over WebUSB (a CDC-ACM device has been read this way on Chrome 156 on Android).
+const isAndroid = (): boolean => {
+  if (typeof navigator === "undefined") return false;
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  return /Android/i.test(nav.userAgent) || nav.userAgentData?.platform === "Android";
+};
+const usbFirst = (): boolean => isAndroid() && getUsb() !== undefined;
 
 // A touch screen (phone, tablet) is the main pointer. There, grabbing focus would pop up the on-screen
 // keyboard over the page, so the always-focused behaviour is for mouse-and-keyboard computers only.
@@ -142,11 +154,14 @@ const describeDevice = (d: UsbDeviceLike): string => {
   const ifaces = d.configuration?.interfaces ?? [];
   if (ifaces.length === 0) return `${d.vendorId.toString(16)}:${d.productId.toString(16)}, no interfaces`;
   const list = ifaces
-    .map((i) => {
-      const a = i.alternates[0];
-      const eps = (a?.endpoints ?? []).map((e) => `${e.direction}/${e.type}`).join("+");
-      return `#${i.interfaceNumber} class ${a?.interfaceClass ?? "?"}${eps ? ` (${eps})` : ""}`;
-    })
+    .map((i) =>
+      i.alternates
+        .map((a) => {
+          const eps = a.endpoints.map((e) => `${e.direction}/${e.type}`).join("+");
+          return `#${i.interfaceNumber}.${a.alternateSetting ?? 0} class ${a.interfaceClass}${eps ? ` (${eps})` : ""}`;
+        })
+        .join(" "),
+    )
     .join(", ");
   return `${d.vendorId.toString(16)}:${d.productId.toString(16)}, ${list}`;
 };
@@ -159,22 +174,28 @@ async function resetDevice(device: UsbDeviceLike): Promise<void> {
 }
 
 async function openUsbSource(device: UsbDeviceLike): Promise<ChunkSource> {
+  // The steps that went through, so a failure says exactly where it stopped.
+  const trail: string[] = [];
   try {
-    return await openUsbSourceOnce(device);
+    return await openUsbSourceOnce(device, (step) => trail.push(step));
   } catch (err) {
+    // Describe the device before closing it: a closed device may no longer report its interfaces.
+    const described = describeDevice(device);
     // Never leave the device open after a failure: the next attempt (or another tab) would find it half-claimed.
     await device.close().catch(() => {});
     const base = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-    throw new Error(`${base} [scanner: ${describeDevice(device)}]`);
+    throw new Error(`${base} [scanner: ${described}] [done: ${trail.join(" > ") || "nothing"}]`);
   }
 }
 
-async function openUsbSourceOnce(device: UsbDeviceLike): Promise<ChunkSource> {
+async function openUsbSourceOnce(device: UsbDeviceLike, mark: (step: string) => void): Promise<ChunkSource> {
   if (!device.opened) await device.open();
+  mark("open");
   if (!device.configuration) await device.selectConfiguration(1);
+  mark("configuration");
 
   // The data interface of a CDC device has a bulk IN endpoint: that is where the scanned text arrives.
-  let data: { iface: number; endpoint: number; packetSize: number; isCdcData: boolean } | null = null;
+  let data: { iface: number; alt: number; endpoint: number; packetSize: number; isCdcData: boolean } | null = null;
   let comm: number | null = null;
   for (const iface of device.configuration?.interfaces ?? []) {
     for (const alt of iface.alternates) {
@@ -183,7 +204,7 @@ async function openUsbSourceOnce(device: UsbDeviceLike): Promise<ChunkSource> {
       if (!bulkIn) continue;
       const isCdcData = alt.interfaceClass === CDC_DATA_CLASS;
       if (!data || (isCdcData && !data.isCdcData)) {
-        data = { iface: iface.interfaceNumber, endpoint: bulkIn.endpointNumber, packetSize: bulkIn.packetSize ?? 64, isCdcData };
+        data = { iface: iface.interfaceNumber, alt: alt.alternateSetting ?? 0, endpoint: bulkIn.endpointNumber, packetSize: bulkIn.packetSize ?? 64, isCdcData };
       }
     }
   }
@@ -206,25 +227,52 @@ async function openUsbSourceOnce(device: UsbDeviceLike): Promise<ChunkSource> {
   };
   try {
     await claimAll();
+    mark(commClaimed ? "claimed control+data" : "claimed data");
   } catch {
+    mark("claim failed, reset");
     await resetDevice(device);
     await claimAll();
+    mark(commClaimed ? "claimed control+data after reset" : "claimed data after reset");
   }
 
-  // Some scanners only send once the "serial port" is opened (DTR and RTS raised). Harmless for the ones that do not care.
+  // A data interface whose endpoints sit in a non-default setting needs that setting selected before it is read.
+  if (data.alt !== 0) {
+    await device.selectAlternateInterface(data.iface, data.alt);
+    mark(`alt ${data.alt}`);
+  }
+
   if (commClaimed && comm !== null) {
+    // Line coding 9600 8N1, as a serial port driver sets when it opens the port. A scanner ignores the rate.
+    try {
+      await device.controlTransferOut(
+        { requestType: "class", recipient: "interface", request: 0x20, value: 0, index: comm },
+        new Uint8Array([0x80, 0x25, 0x00, 0x00, 0x00, 0x00, 0x08]),
+      );
+      mark("line coding");
+    } catch {
+      /* not needed by every scanner */
+    }
+    // Some scanners only send once the "serial port" is opened (DTR and RTS raised). Harmless for the ones that do not care.
     try {
       await device.controlTransferOut({ requestType: "class", recipient: "interface", request: 0x22, value: 0x03, index: comm });
+      mark("DTR/RTS");
     } catch {
       /* not needed by every scanner */
     }
   }
 
+  let stalls = 0;
   return {
     async read() {
       // Ask for a whole packet at a time: a smaller buffer than the endpoint's packet size ends in a "babble" error.
       const result = await device.transferIn(data.endpoint, Math.max(data.packetSize, 64));
+      if (result.status === "stall" && stalls++ < 3) {
+        // A stalled endpoint is cleared and read again: the scanner is still there.
+        await device.clearHalt("in", data.endpoint);
+        return new Uint8Array();
+      }
       if (result.status !== "ok") return null;
+      stalls = 0;
       return result.data ? new Uint8Array(result.data.buffer, result.data.byteOffset, result.data.byteLength) : new Uint8Array();
     },
     // Closing the device ends a transferIn that is waiting.
@@ -261,8 +309,9 @@ export function useSerialScanner(onScan: (value: string) => void | Promise<void>
   const connectRef = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
-    // Web Serial is used wherever the browser has it (including Chrome on Android); WebUSB only as a fallback.
-    const serial = getSerial();
+    // Web Serial is used wherever the browser lists USB ports. Chrome on Android does not (it lists only Bluetooth
+    // ports), so there the scanner is read over WebUSB. WebUSB is also the fallback where there is no Web Serial.
+    const serial = usbFirst() ? undefined : getSerial();
     const usb = serial ? undefined : getUsb();
     if (!serial && !usb) return;
 

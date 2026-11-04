@@ -12,7 +12,7 @@ const nextConfig: NextConfig = {
     // Server Actions (e.g. lookupLabelAction) reject requests whose forwarded host doesn't match the
     // origin. Allow the ngrok tunnel so actions work when the app is opened through it.
     serverActions: {
-      allowedOrigins: ["alene-offscreen-unprevalently.ngrok-free.dev"],
+      allowedOrigins: ["alene-offscreen-unprevalently.ngrok-free.dev", "*.trycloudflare.com"],
     },
   },
   cacheComponents: true,
@@ -24,6 +24,7 @@ const nextConfig: NextConfig = {
     "192.168.18.3",
     "10.158.41.195",
     "alene-offscreen-unprevalently.ngrok-free.dev",
+    "*.trycloudflare.com",
   ],
   // The app has no landing page: / goes to the dashboard, whose proxy/layout sends signed-out visitors to /login.
   async redirects() {
